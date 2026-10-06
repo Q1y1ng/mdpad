@@ -1,0 +1,92 @@
+<#
+  mdpad shell 集成安装脚本
+  ---------------------------------------------------------------
+  做四件事（全部只动 HKCU 与用户目录，不需要管理员）：
+    1. 生成图标 %LOCALAPPDATA%\mdpad\mdpad.ico
+       —— 必须放在 C:（与 wscript.exe 同盘），否则桌面快捷方式图标会变白块
+    2. 建快捷方式（开始菜单 + 桌面），目标指向 **微软签名的 wscript.exe** + mdpad.vbs
+       —— 这是绕开 SmartScreen「发布者未知」的关键：被双击的对象不再是未签名 exe
+    3. 注册右键菜单「用 mdpad 编辑（Markdown）」→ 同样走 wscript 启动器
+    4. 登记「打开方式」条目（Applications\mdpad.exe）
+  已存在的 .lnk 必须先删掉再建（CreateShortcut 对已有文件是「加载→改→存」，
+  会留下旧结构导致图标/参数不生效）。
+
+  用法（普通权限即可）：
+    & "E:\AI\tools\powershell\pwsh.exe" -NoProfile -File E:\AI\mdpad\tools\install-shell.ps1
+#>
+
+$ErrorActionPreference = 'Stop'
+
+$root = Split-Path $PSScriptRoot -Parent
+$exe = Join-Path $root 'mdpad.exe'
+$vbs = Join-Path $root 'mdpad.vbs'
+$wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+$iconDir = Join-Path $env:LOCALAPPDATA 'mdpad'
+$ico = Join-Path $iconDir 'mdpad.ico'
+
+if (-not (Test-Path $exe)) { throw "找不到 $exe（先跑 build.cmd）" }
+if (-not (Test-Path $vbs)) { throw "找不到 $vbs" }
+
+Write-Host '=== 1) 生成图标 ===' -ForegroundColor Cyan
+New-Item -ItemType Directory -Path $iconDir -Force | Out-Null
+Add-Type -AssemblyName System.Drawing
+$bmp = New-Object System.Drawing.Bitmap 48, 48
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+$g.FillEllipse((New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(58, 122, 214))), 0, 0, 47, 47)
+$f = New-Object System.Drawing.Font('Segoe UI', 26, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+$sf = New-Object System.Drawing.StringFormat
+$sf.Alignment = [System.Drawing.StringAlignment]::Center
+$sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+$g.DrawString('M', $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 1, 47, 47)), $sf)
+$g.Dispose()
+$hicon = $bmp.GetHicon()
+$icon = [System.Drawing.Icon]::FromHandle($hicon)
+$fs = [IO.File]::Create($ico)
+$icon.Save($fs)
+$fs.Close()
+$bmp.Dispose()
+Write-Host "  $ico  ($((Get-Item $ico).Length) 字节)"
+
+Write-Host '=== 2) 建快捷方式（指向 wscript.exe） ===' -ForegroundColor Cyan
+$desc = 'mdpad —— 记事本式 Markdown 编辑器'
+function New-Lnk([string]$path, [string]$arguments) {
+  if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+  $sh = New-Object -ComObject WScript.Shell
+  $lnk = $sh.CreateShortcut($path)
+  $lnk.TargetPath = $wscript
+  $lnk.Arguments = $arguments
+  $lnk.WorkingDirectory = $root
+  $lnk.IconLocation = "$ico,0"
+  $lnk.Description = $desc
+  $lnk.Save()
+  Write-Host "  $path"
+}
+$startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\mdpad.lnk'
+New-Lnk $startMenu ('"' + $vbs + '"')
+$desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'mdpad.lnk'
+New-Lnk $desktop ('"' + $vbs + '"')
+
+Write-Host '=== 3) 右键菜单 + 打开方式（走 wscript 启动器） ===' -ForegroundColor Cyan
+$cmd = '"' + $wscript + '" "' + $vbs + '" "%1"'
+$menuText = '用 mdpad 编辑（Markdown）'
+foreach ($ext in @('.md', '.markdown', '.mdx')) {
+  $base = "HKCU:\Software\Classes\SystemFileAssociations\$ext\shell\MdPadEdit"
+  New-Item -Path $base -Force | Out-Null
+  New-Item -Path "$base\command" -Force | Out-Null
+  Set-ItemProperty -Path $base -Name '(Default)' -Value $menuText
+  Set-ItemProperty -Path $base -Name 'Icon' -Value "$ico,0"
+  Set-ItemProperty -Path "$base\command" -Name '(Default)' -Value $cmd
+  Write-Host "  $ext -> $menuText"
+}
+$app = 'HKCU:\Software\Classes\Applications\mdpad.exe'
+New-Item -Path "$app\shell\open\command" -Force | Out-Null
+Set-ItemProperty -Path $app -Name 'FriendlyAppName' -Value 'mdpad（Markdown 编辑器）'
+Set-ItemProperty -Path "$app\shell\open\command" -Name '(Default)' -Value $cmd
+Write-Host '  Applications\mdpad.exe 已登记'
+
+Write-Host ''
+Write-Host '完成。验收：' -ForegroundColor Green
+Write-Host "  · 双击桌面「mdpad」快捷方式 → 不应再出现 SmartScreen"
+Write-Host "  · 右键任意 .md → 显示更多选项 → 「$menuText」"
+Write-Host "  · 命令行验证启动器：wscript.exe `"$vbs`" `"$root\demo.md`""

@@ -4,6 +4,23 @@
 
 ## [未发布]
 
+## [1.2.0] - 2026-10-07
+
+### 新增
+- **Win11 原生质感**：标题栏走 DWM Mica 材质（`SYSTEMBACKDROP_TYPE=2`）+ 沉浸式深色标题栏（不再自定标题栏颜色，交还系统原生绘制）；命令栏/状态栏用 Win11 原生配色（浅 `#F3F3F3` / 深 `#202020`）；界面字体 Segoe UI Variable Text
+- **工具栏改用 Segoe Fluent Icons**（系统原生图标字体，随主题换色），按钮 40×32、悬停圆角高亮 4px、竖向细分隔线
+- **行号槽**：`EditorBox`（拦 `WM_VSCROLL`/`WM_MOUSEWHEEL`/翻页键发出滚动通知）+ `GutterPanel`（按逻辑行编号，自动换行折行不另编号）
+- **空文档引导页**：快捷键速查表，不再是纯黑空白
+- **`mdpad.vbs` 启动器 + `tools\install-shell.ps1`**：快捷方式与右键菜单都指向**微软签名的 wscript.exe**（`WshShell.Exec` → CreateProcess），**彻底绕开 SmartScreen「发布者未知」，无需任何代码签名**
+- 开始菜单 + 桌面快捷方式（图标必须放 `%LOCALAPPDATA%\mdpad\mdpad.ico`，与 wscript.exe 同盘，否则图标变白块）
+
+### 修复
+- **启动即崩「创建窗口句柄时出错」**（本机 build 22631 实测，100% 复现）：句柄会在窗体首次显示时的 `WM_SHOWWINDOW → CreateControl` 递归里创建，而那一步创建 EDIT 控件会失败，且 `OnLoad` 都来不及跑
+  → 构造函数末尾 `ForceHandles()` 递归强制建句柄（注意 `Control.CreateControl()` 对**不可见**子控件是跳过的，必须直接访问 `Handle`）；所有外观类操作（`ScrollBars` 重建句柄、uxtheme 主题、预览初始化、OnShown 全体）一律包 try/catch，失败只记日志、不弹崩溃框
+- **不要用 uxtheme 的未公开序号**（`#135 SetPreferredAppMode` / `#133 AllowDarkModeForWindow`）：序号随 Windows 版本漂移，本机调用后 EDIT 控件再也建不出句柄。滚动条暗色只用公开 API `SetWindowTheme(hwnd, "DarkMode_Explorer", null)`（IE 的滚动条是 MSHTML 的子窗口，需枚举 `ScrollBar` 类补刷）
+- 日志改为按进程号分文件、同时写 exe 同目录（崩溃实例的模态框会锁住日志文件；沙箱下 `%APPDATA%` 也可能写不进）
+- 空文档时禁用态滚动条仍是白色 → 不需要滚动时干脆不显示滚动条（`EditorNeedsScrollbar()`）
+
 ## [1.1.0] - 2026-10-06
 
 ### 新增

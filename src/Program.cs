@@ -17,6 +17,8 @@ namespace MdPad
             AppDomain.CurrentDomain.UnhandledException += OnUnhandled;
             Application.ThreadException += OnThreadException;
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            // 首次异常：任何异常一抛出就记堆栈（哪怕随后被 catch 吞掉），用来定位「创建窗口句柄」到底出在哪一步
+            AppDomain.CurrentDomain.FirstChanceException += OnFirstChance;
 
             try
             {
@@ -33,6 +35,17 @@ namespace MdPad
             }
         }
 
+        private static void OnFirstChance(object sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs e)
+        {
+            try
+            {
+                string st = e.Exception.StackTrace;
+                if (st == null || st.IndexOf("MdPad", StringComparison.Ordinal) < 0) return;   // 只看我们自己的代码
+                Log("FirstChance: " + e.Exception.GetType().FullName + " : " + e.Exception.Message + Environment.NewLine + st);
+            }
+            catch { }
+        }
+
         private static void OnThreadException(object sender, System.Threading.ThreadExceptionEventArgs e)
         {
             Log("Thread: " + e.Exception.ToString());
@@ -46,14 +59,23 @@ namespace MdPad
 
         private static void Log(string text)
         {
-            try
+            string[] dirs = new string[]
             {
-                string dir = Path.GetDirectoryName(logPath);
-                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                File.AppendAllText(logPath,
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + text + Environment.NewLine, Encoding.UTF8);
+                Path.GetDirectoryName(logPath),
+                AppDomain.CurrentDomain.BaseDirectory      // exe 同目录兜底（%APPDATA% 写不进去时用）
+            };
+            for (int i = 0; i < dirs.Length; i++)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(dirs[i])) continue;
+                    if (!Directory.Exists(dirs[i])) Directory.CreateDirectory(dirs[i]);
+                    string file = Path.Combine(dirs[i], "mdpad-error-" + System.Diagnostics.Process.GetCurrentProcess().Id + ".log");
+                    File.AppendAllText(file,
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + text + Environment.NewLine, Encoding.UTF8);
+                }
+                catch { }
             }
-            catch { }
         }
 
         /// <summary>

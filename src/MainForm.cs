@@ -16,7 +16,7 @@ namespace MdPad
     internal sealed class MainForm : Form
     {
         // ---------------- 控件
-        private readonly TextBox editor = new TextBox();
+        private readonly EditorBox editor = new EditorBox();
         private readonly WebBrowser preview = new WebBrowser();
         private readonly SplitContainer split = new SplitContainer();
         private readonly Timer debounce = new Timer();
@@ -39,6 +39,7 @@ namespace MdPad
         private ToolStripMenuItem miPreviewOnly;
         private ToolStripMenuItem miBoth;
         private Panel editorHost;
+        private GutterPanel gutter;
         private ToolStrip toolbar;
         private MenuStrip menuStrip;
         private ToolStripMenuItem miThemeFollow;
@@ -46,6 +47,9 @@ namespace MdPad
         private ToolStripMenuItem miThemeDark;
         private int themeMode;              // 0 跟随系统 / 1 浅色 / 2 深色
         private bool isDarkTheme;
+        private Font gutterFont;
+        private Color themeEditorBg = Color.White;
+        private Color themeDivider = Color.FromArgb(227, 227, 227);
 
         // ---------------- 状态
         private string currentPath;
@@ -63,6 +67,7 @@ namespace MdPad
         private FileSystemWatcher watcher;
         private DateTime lastSaveUtc = DateTime.MinValue;
         private readonly string configPath;
+        private string pendingFile;
 
         public MainForm(string[] args)
         {
@@ -71,6 +76,7 @@ namespace MdPad
             LoadConfig();
 
             Text = "mdpad";
+            Font = PickUiFont(9f);
             MinimumSize = new Size(560, 340);
             Width = 1180;
             Height = 760;
@@ -81,22 +87,88 @@ namespace MdPad
             KeyPreview = true;
 
             BuildUi();
+            LogSafe("ctor: after BuildUi form.IsHandleCreated=" + IsHandleCreated);
             ApplyFont();
             ApplyTheme();
             ApplyViewMode();
-            UpdateStatus();
-            HandleCreated += delegate { ApplyDwm(); };
 
             DragEnter += OnDragEnter;
             DragDrop += OnDragDrop;
             editor.DragEnter += OnDragEnter;
             editor.DragDrop += OnDragDrop;
             FormClosing += OnFormClosing;
-            Shown += delegate
+            pendingFile = (args != null && args.Length > 0 && File.Exists(args[0])) ? args[0] : null;
+
+            // ★ 关键：在窗体第一次显示之前，把整棵控件树的句柄建好。
+            //   否则句柄会在 WM_SHOWWINDOW 的 CreateControl 递归里创建 —— 本机（build 22631）
+            //   实测那一步创建 EDIT 控件会失败：「创建窗口句柄时出错」，且 OnLoad 都来不及跑。
+            //   注意 Control.CreateControl() 对「不可见」的子控件是跳过的（窗体尚未显示 → 全部不可见），
+            //   所以必须直接访问 Handle 来强制创建。
+            Safe("ctor-ForceHandles", delegate
             {
-                if (args != null && args.Length > 0 && File.Exists(args[0])) OpenFile(args[0], true);
-                else editor.Focus();
+                ForceHandles(this);
+                LogSafe("ctor: ForceHandles 完成; editor=" + editor.IsHandleCreated + " preview=" + preview.IsHandleCreated);
+            });
+        }
+
+        private static void ForceHandles(Control c)
+        {
+            try { IntPtr h = c.Handle; }
+            catch (Exception ex)
+            {
+                LogSafe("ForceHandles 失败: " + c.GetType().FullName + " [" + c.Name + "] " + ex.GetType().Name + " " + ex.Message);
+                return;
+            }
+            foreach (Control child in c.Controls) ForceHandles(child);
+        }
+
+        // ---------------- 兜底：任何一步失败都写日志而不是弹崩溃框 ----------------
+        internal static void LogSafe(string msg)
+        {
+            string[] dirs = new string[]
+            {
+                AppDomain.CurrentDomain.BaseDirectory,                                     // exe 同目录（最可靠）
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "mdpad")
             };
+            for (int i = 0; i < dirs.Length; i++)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(dirs[i])) continue;
+                    if (!Directory.Exists(dirs[i])) Directory.CreateDirectory(dirs[i]);
+                    string file = Path.Combine(dirs[i], "mdpad-error-" + System.Diagnostics.Process.GetCurrentProcess().Id + ".log");
+                    File.AppendAllText(file, DateTime.Now.ToString("HH:mm:ss.fff") + "  " + msg + Environment.NewLine, Encoding.UTF8);
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>
+        /// 在窗体真正显示之前把整棵控件树的句柄建好。
+        /// 不这么做的话，句柄会在 WM_SHOWWINDOW 的 CreateControl 递归里被创建 ——
+        /// 实测这台机器上 EDIT 控件那一步会失败（「创建窗口句柄时出错」），且是间歇性的。
+        /// </summary>
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            LogSafe(string.Format("OnLoad: form={0} editor={1} preview={2}", IsHandleCreated, editor.IsHandleCreated, preview.IsHandleCreated));
+            try
+            {
+                CreateControl();     // 递归创建子控件句柄（此时窗体已建句柄但尚未显示）
+                LogSafe("OnLoad: CreateControl OK; editor=" + editor.IsHandleCreated + " preview=" + preview.IsHandleCreated);
+            }
+            catch (Exception ex)
+            {
+                LogSafe("OnLoad: CreateControl 失败: " + ex.ToString());
+                try { editor.CreateControl(); LogSafe("OnLoad: 单独建 editor 句柄 OK"); }
+                catch (Exception ex2) { LogSafe("OnLoad: 单独建 editor 句柄也失败: " + ex2.Message); }
+            }
+        }
+
+        private static void Safe(string what, MethodInvoker act)
+        {
+            try { act(); }
+            catch (Exception ex) { LogSafe("[" + what + "] " + ex.ToString()); }
         }
 
         // ================================================================ 界面
@@ -106,8 +178,22 @@ namespace MdPad
             // ---- 编辑区（外面套一层带内边距的面板，视觉上不贴边）
             editorHost = new Panel();
             editorHost.Dock = DockStyle.Fill;
-            editorHost.Padding = new Padding(14, 10, 8, 10);
-            editorHost.Controls.Add(editor);
+            editorHost.Padding = new Padding(2, 10, 8, 10);
+            if (Environment.GetEnvironmentVariable("MDPAD_NOGUTTER") != "1")
+            {
+                gutter = new GutterPanel(editor);
+                gutter.Dock = DockStyle.Left;
+            }
+            editorHost.Controls.Add(editor);              // 先加填充控件
+            if (gutter != null) editorHost.Controls.Add(gutter);   // 再加左侧停靠控件
+            if (Environment.GetEnvironmentVariable("MDPAD_DIAG") == "1")
+            {
+                LogSafe(string.Format("diag: editor={0}x{1} host={2}x{3} panel1={4}x{5} gutterW={6} form={7}x{8}",
+                    editor.Width, editor.Height, editorHost.Width, editorHost.Height,
+                    split.Panel1.Width, split.Panel1.Height, gutter == null ? 0 : gutter.Width, Width, Height));
+                try { IntPtr hh = editor.Handle; LogSafe("diag: 预建 editor 句柄 OK " + hh); }
+                catch (Exception ex) { LogSafe("diag: 预建 editor 句柄失败: " + ex.GetType().Name + " " + ex.Message); }
+            }
 
             editor.Multiline = true;
             editor.Dock = DockStyle.Fill;
@@ -119,7 +205,9 @@ namespace MdPad
             editor.HideSelection = false;
             editor.AllowDrop = true;
             editor.TextChanged += OnEditorTextChanged;
+            editor.Scrolled += OnEditorScrolled;
             editor.KeyDown += OnEditorKeyDown;
+            editor.Resize += delegate { UpdateEditorScrollbars(); };
             editor.KeyUp += OnSelectionChangedLike;
             editor.MouseUp += OnSelectionChangedLike;
 
@@ -137,8 +225,7 @@ namespace MdPad
             split.SplitterWidth = 6;
             split.Panel1MinSize = 120;
             split.Panel2MinSize = 120;
-            split.Panel1.Controls.Add(editorHost);
-            split.Panel2.Controls.Add(preview);
+            split.Panel1.Controls.Add(editorHost);            split.Panel2.Controls.Add(preview);
             split.Panel2.BackColor = Color.White;
 
             // ---- 查找/替换条
@@ -183,6 +270,8 @@ namespace MdPad
 
             // ---- 状态栏
             statusStrip.Items.AddRange(new ToolStripItem[] { stFile, stEnc, stPos, stLen, stMode });
+            statusStrip.SizingGrip = false;
+            statusStrip.Padding = new Padding(8, 2, 8, 2);
             stFile.Spring = true;
             stFile.TextAlign = ContentAlignment.MiddleLeft;
             stEnc.BorderSides = ToolStripStatusLabelBorderSides.Left;
@@ -352,7 +441,7 @@ namespace MdPad
             b.ToolTipText = tip;
             b.Tag = kind;
             b.AutoSize = false;
-            b.Size = new Size(30, 26);
+            b.Size = new Size(40, 32);
             b.Click += h;
             toolbar.Items.Add(b);
         }
@@ -381,11 +470,14 @@ namespace MdPad
             isDarkTheme = themeMode == 2 || (themeMode == 0 && IsSystemDark());
             darkPreview = isDarkTheme;
 
+            // Win11 原生调色（与记事本一致）：命令栏 #F3F3F3 / #202020，内容面 #FFFFFF / #202020
             Color bgChrome = isDarkTheme ? Color.FromArgb(32, 32, 32) : Color.FromArgb(243, 243, 243);
-            Color bgEditor = isDarkTheme ? Color.FromArgb(30, 30, 30) : Color.White;
-            Color fgEditor = isDarkTheme ? Color.FromArgb(220, 220, 220) : Color.FromArgb(31, 31, 31);
-            Color fgChrome = isDarkTheme ? Color.FromArgb(228, 228, 228) : Color.FromArgb(32, 32, 32);
-            Color divider = isDarkTheme ? Color.FromArgb(58, 58, 58) : Color.FromArgb(226, 226, 226);
+            Color bgEditor = isDarkTheme ? Color.FromArgb(32, 32, 32) : Color.White;
+            Color fgEditor = isDarkTheme ? Color.FromArgb(232, 232, 232) : Color.FromArgb(27, 27, 27);
+            Color fgChrome = isDarkTheme ? Color.FromArgb(232, 232, 232) : Color.FromArgb(27, 27, 27);
+            Color divider = isDarkTheme ? Color.FromArgb(61, 61, 61) : Color.FromArgb(227, 227, 227);
+            themeEditorBg = bgEditor;
+            themeDivider = divider;
 
             DoubleBuffered = true;
             BackColor = bgChrome;
@@ -398,6 +490,7 @@ namespace MdPad
             split.BackColor = divider;
             split.Panel1.BackColor = bgEditor;
             split.Panel2.BackColor = bgEditor;
+            ApplyGutter();
 
             findBar.BackColor = bgChrome;
             findBar.ForeColor = fgChrome;
@@ -416,7 +509,9 @@ namespace MdPad
             statusStrip.ForeColor = fgChrome;
             foreach (ToolStripItem it in statusStrip.Items) it.ForeColor = fgChrome;
 
-            MdPadRenderer r = new MdPadRenderer(bgChrome, fgChrome, isDarkTheme);
+            MdPadRenderer r = new MdPadRenderer(bgChrome, fgChrome, isDarkTheme,
+                isDarkTheme ? Color.FromArgb(255, 255, 255, 18) : Color.FromArgb(0, 0, 0, 14),
+                isDarkTheme ? Color.FromArgb(255, 255, 255, 28) : Color.FromArgb(0, 0, 0, 24));
             menuStrip.Renderer = r;
             toolbar.Renderer = r;
             statusStrip.Renderer = r;
@@ -440,6 +535,10 @@ namespace MdPad
             Icon = MakeAppIcon();
             if (oldIcon != null) oldIcon.Dispose();
 
+            // 句柄还没建好：预览、标题栏材质、滚动条主题都留到 OnShown 再应用，
+            // 否则会在这里强制 CreateHandle（WebBrowser/TextBox 都可能失败）。
+            if (!IsHandleCreated) return;
+
             previewReady = false;
             previewInitializing = false;
             if (viewMode != 1) InitPreview();
@@ -452,14 +551,13 @@ namespace MdPad
             {
                 if (!IsHandleCreated) return;
                 int dark = isDarkTheme ? 1 : 0;
-                int cap = (isDarkTheme ? Color.FromArgb(32, 32, 32) : Color.FromArgb(243, 243, 243)).ToArgb();
-                int txt = (isDarkTheme ? Color.White : Color.FromArgb(28, 28, 28)).ToArgb();
-                int border = (isDarkTheme ? Color.FromArgb(58, 58, 58) : Color.FromArgb(219, 219, 219)).ToArgb();
+                int backdrop = 2;      // DWMSBT_MAINWINDOW = Mica（标题栏原生材质）
+                int border = (isDarkTheme ? Color.FromArgb(61, 61, 61) : Color.FromArgb(227, 227, 227)).ToArgb();
                 int a;
-                a = 20; DwmSetWindowAttribute(Handle, a, ref dark, 4);
-                a = 35; DwmSetWindowAttribute(Handle, a, ref cap, 4);
-                a = 36; DwmSetWindowAttribute(Handle, a, ref txt, 4);
-                a = 34; DwmSetWindowAttribute(Handle, a, ref border, 4);
+                a = 20; DwmSetWindowAttribute(Handle, a, ref dark, 4);       // 沉浸式深色标题栏
+                a = 38; DwmSetWindowAttribute(Handle, a, ref backdrop, 4);   // 系统背景材质 = Mica
+                a = 34; DwmSetWindowAttribute(Handle, a, ref border, 4);     // 窗口描边
+                // 注意：不设 CAPTION_COLOR/TEXT_COLOR —— 让系统按原生方式绘制 Mica 标题栏
             }
             catch { }
             ApplyDarkScrollbars();
@@ -472,12 +570,6 @@ namespace MdPad
         [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
         private static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
 
-        [System.Runtime.InteropServices.DllImport("uxtheme.dll", EntryPoint = "#135", SetLastError = true)]
-        private static extern int SetPreferredAppMode(int appMode);
-
-        [System.Runtime.InteropServices.DllImport("uxtheme.dll", EntryPoint = "#133", SetLastError = true)]
-        private static extern bool AllowDarkModeForWindow(IntPtr hWnd, bool allow);
-
         private delegate bool EnumWindowProc(IntPtr hWnd, IntPtr lParam);
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -486,42 +578,49 @@ namespace MdPad
         [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
         private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
-        private void ApplyDarkScrollbars()
+        /// <summary>
+        /// 深色滚动条：只用公开的 SetWindowTheme(hwnd, "DarkMode_Explorer", null)。
+        /// ⚠️ 千万不要用 uxtheme 的未公开序号（#135 SetPreferredAppMode / #133 AllowDarkModeForWindow）：
+        ///    序号随 Windows 版本漂移，本机 build 22631 上调用后会让 EDIT 控件再也建不出句柄
+        ///    （表现：启动即「创建窗口句柄时出错」，实测 5 组开关矩阵定位）。
+        /// </summary>
+        private static string Env(string k)
         {
-            try
-            {
-                // 1 = AllowDark，2 = ForceDark，0 = Default
-                try { SetPreferredAppMode(isDarkTheme ? 2 : 0); }
-                catch { }
-
-                string sub = isDarkTheme ? "DarkMode_Explorer" : "";
-                IntPtr[] handles = new IntPtr[]
-                {
-                    Handle, editor.Handle, editorHost.Handle, split.Handle, split.Panel1.Handle,
-                    split.Panel2.Handle, preview.Handle, findBar.Handle, findBox.Handle, replBox.Handle
-                };
-                for (int i = 0; i < handles.Length; i++)
-                {
-                    if (handles[i] == IntPtr.Zero) continue;
-                    try { AllowDarkModeForWindow(handles[i], isDarkTheme); }
-                    catch { }
-                    ApplyWindowTheme(handles[i], sub);
-                }
-
-                // IE 的滚动条是 MSHTML 建出来的子窗口（类名 ScrollBar），要单独刷
-                for (int i = 0; i < handles.Length; i++)
-                    ApplyThemeToScrollbarChildren(handles[i], sub);
-            }
-            catch { }
+            string v = Environment.GetEnvironmentVariable(k);
+            return v == null ? "" : v;
         }
 
-        private static void ApplyWindowTheme(IntPtr h, string sub)
+        private void ApplyDarkScrollbars()
         {
+            if (Env("MDPAD_NOSCROLLTHEME") == "1") return;
+            try
+            {
+                LogSafe(string.Format("ApplyDarkScrollbars: form={0} editor={1} preview={2} dark={3}",
+                    IsHandleCreated, editor.IsHandleCreated, preview.IsHandleCreated, isDarkTheme));
+                if (!IsHandleCreated) return;
+                string sub = isDarkTheme ? "DarkMode_Explorer" : "";
+                bool editorOnly = Env("MDPAD_THEME_EDITOR_ONLY") == "1";
+                bool previewOnly = Env("MDPAD_THEME_PREVIEW_ONLY") == "1";
+                bool noChildren = Env("MDPAD_THEME_NOCHILDREN") == "1";
+                if (!previewOnly) ThemeWindow(editor.Handle, sub);
+                if (!editorOnly) ThemeWindow(preview.Handle, sub);
+                if (!noChildren)
+                {
+                    if (!editorOnly) ThemeScrollbarChildren(preview.Handle, sub);
+                    if (!previewOnly) ThemeScrollbarChildren(editor.Handle, sub);
+                }
+            }
+            catch (Exception ex) { LogSafe("[ApplyDarkScrollbars] " + ex.ToString()); }
+        }
+
+        private static void ThemeWindow(IntPtr h, string sub)
+        {
+            if (h == IntPtr.Zero) return;
             try { SetWindowTheme(h, sub, sub); }
             catch { }
         }
 
-        private void ApplyThemeToScrollbarChildren(IntPtr parent, string sub)
+        private void ThemeScrollbarChildren(IntPtr parent, string sub)
         {
             if (parent == IntPtr.Zero) return;
             try
@@ -530,13 +629,7 @@ namespace MdPad
                 {
                     StringBuilder sb = new StringBuilder(64);
                     GetClassName(h, sb, sb.Capacity);
-                    string cls = sb.ToString();
-                    if (cls == "ScrollBar" || cls == "mshtml")
-                    {
-                        try { AllowDarkModeForWindow(h, isDarkTheme); }
-                        catch { }
-                        ApplyWindowTheme(h, sub);
-                    }
+                    if (sb.ToString() == "ScrollBar") ThemeWindow(h, sub);
                     return true;
                 }, IntPtr.Zero);
             }
@@ -573,8 +666,95 @@ namespace MdPad
             }
         }
 
+        /// <summary>空文档时的引导页（免得只看到一大片空白）</summary>
+        private static string WelcomeBody()
+        {
+            string k = "<span class=\"kbd\">";
+            return "<div class=\"welcome\">"
+                 + "<h1>mdpad</h1>"
+                 + "<p class=\"muted\">记事本式的 Markdown 编辑器 —— 左边改，右边即时渲染</p>"
+                 + "<table>"
+                 + "<tr><td>" + k + "Ctrl</span>" + k + "N</span> / " + k + "O</span> / " + k + "S</span></td><td>新建 / 打开 / 保存</td></tr>"
+                 + "<tr><td>" + k + "Ctrl</span>" + k + "B</span> / " + k + "I</span> / " + k + "K</span></td><td>粗体 / 斜体 / 链接</td></tr>"
+                 + "<tr><td>" + k + "Ctrl</span>" + k + "1</span> / " + k + "2</span> / " + k + "3</span></td><td>编辑 + 预览 / 仅编辑 / 仅预览</td></tr>"
+                 + "<tr><td>" + k + "Ctrl</span>" + k + "F</span> / " + k + "H</span></td><td>查找 / 替换</td></tr>"
+                 + "<tr><td>" + k + "Tab</span> / " + k + "Shift</span>" + k + "Tab</span></td><td>缩进 / 反缩进</td></tr>"
+                 + "</table>"
+                 + "<p class=\"muted\">把 .md 文件拖进窗口，或右键任意 .md → 「用 mdpad 编辑（Markdown）」</p>"
+                 + "</div>";
+        }
+
+        /// <summary>工具栏图标：Win11 原生 Segoe Fluent Icons，随主题换色</summary>
+        private Image Glyph(string kind, Color c)
+        {
+            string text = null;
+            switch (kind)
+            {
+                case "new": text = "\uE7C3"; break;
+                case "open": text = "\uE8E5"; break;
+                case "save": text = "\uE74E"; break;
+                case "col2": text = "\uE8A9"; break;
+                case "col1": text = "\uEA37"; break;
+                case "eye": text = "\uE7B3"; break;
+                case "find": text = "\uE721"; break;
+                case "theme": text = isDarkTheme ? "\uE706" : "\uE708"; break;   // 深色时显示太阳（点击切浅色）
+            }
+            if (text == null) return TextGlyph(kind == "plus" ? "A+" : "A-", c);
+
+            Bitmap bmp = new Bitmap(20, 20);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                using (Font f = new Font(IconFontName(), 11.5f, FontStyle.Regular))
+                using (SolidBrush b = new SolidBrush(c))
+                {
+                    StringFormat sf = new StringFormat();
+                    sf.Alignment = StringAlignment.Center;
+                    sf.LineAlignment = StringAlignment.Center;
+                    g.DrawString(text, f, b, new RectangleF(0, 0, 20, 20), sf);
+                }
+            }
+            return bmp;
+        }
+
+        private static string iconFontCache;
+
+        private static string IconFontName()
+        {
+            if (iconFontCache != null) return iconFontCache;
+            iconFontCache = "Segoe Fluent Icons";
+            try
+            {
+                using (Font f = new Font(iconFontCache, 10f))
+                {
+                    if (!string.Equals(f.Name, iconFontCache, StringComparison.OrdinalIgnoreCase))
+                        iconFontCache = "Segoe MDL2 Assets";
+                }
+            }
+            catch { iconFontCache = "Segoe MDL2 Assets"; }
+            return iconFontCache;
+        }
+
+        private static Image TextGlyph(string text, Color c)
+        {
+            Bitmap bmp = new Bitmap(20, 20);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                using (Font f = new Font("Segoe UI Variable Text", 8.5f, FontStyle.Regular))
+                using (SolidBrush b = new SolidBrush(c))
+                {
+                    StringFormat sf = new StringFormat();
+                    sf.Alignment = StringAlignment.Center;
+                    sf.LineAlignment = StringAlignment.Center;
+                    g.DrawString(text, f, b, new RectangleF(0, 0, 20, 20), sf);
+                }
+            }
+            return bmp;
+        }
+
         /// <summary>工具栏图标：运行时用 GDI+ 画，随主题换色，不依赖外部资源</summary>
-        private static Image Glyph(string kind, Color c)
+        private static Image GlyphLegacy(string kind, Color c)
         {
             Bitmap bmp = new Bitmap(20, 20);
             using (Graphics g = Graphics.FromImage(bmp))
@@ -643,7 +823,15 @@ namespace MdPad
         private void ApplyWrap()
         {
             editor.WordWrap = miWrap.Checked;
-            editor.ScrollBars = editor.WordWrap ? ScrollBars.Vertical : ScrollBars.Both;
+            try
+            {
+                editor.ScrollBars = editor.WordWrap ? ScrollBars.Vertical : ScrollBars.Both;
+            }
+            catch (Exception ex)
+            {
+                // 改 ScrollBars 会重建句柄，本机偶发失败；这是外观问题，不能影响其它初始化
+                LogSafe("[ApplyWrap] " + ex.GetType().Name + " " + ex.Message);
+            }
         }
 
         private void ApplyViewMode()
@@ -653,6 +841,7 @@ namespace MdPad
             miBoth.Checked = viewMode == 0;
             miEditOnly.Checked = viewMode == 1;
             miPreviewOnly.Checked = viewMode == 2;
+            if (!IsHandleCreated) return;      // 句柄没建好之前绝不碰预览（否则会强制 CreateHandle 失败）
             if (viewMode != 1)
             {
                 if (!previewReady) InitPreview();
@@ -673,7 +862,35 @@ namespace MdPad
             Font old = editor.Font;
             editor.Font = new Font(fam, pt, FontStyle.Regular);
             if (old != null) old.Dispose();
+            ApplyGutter();
             if (previewReady) RenderPreview(true);
+        }
+
+        /// <summary>行号槽：字体比正文小 1.5pt，配色跟主题</summary>
+        private void ApplyGutter()
+        {
+            if (gutter == null) return;
+            Font oldG = gutterFont;
+            gutterFont = new Font(editor.Font.FontFamily, Math.Max(6.5f, editor.Font.Size - 1.5f), FontStyle.Regular);
+            gutter.SetTheme(themeEditorBg, isDarkTheme ? Color.FromArgb(133, 133, 133) : Color.FromArgb(150, 150, 150),
+                            themeDivider, gutterFont);
+            if (oldG != null) oldG.Dispose();
+        }
+
+        private static Font PickUiFont(float size)
+        {
+            string[] names = new string[] { "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                try
+                {
+                    Font f = new Font(names[i], size);
+                    if (string.Equals(f.Name, names[i], StringComparison.OrdinalIgnoreCase)) return f;
+                    f.Dispose();
+                }
+                catch { }
+            }
+            return new Font("Segoe UI", size);
         }
 
         private void Zoom(int delta)
@@ -689,6 +906,7 @@ namespace MdPad
         private void InitPreview()
         {
             if (previewInitializing) return;          // 同一时刻只允许一次导航，否则 IE 不触发 DocumentCompleted
+            if (!IsHandleCreated) return;             // 窗体句柄没建好之前绝不碰 WebBrowser
             previewInitializing = true;
             previewReady = false;
             try
@@ -697,7 +915,11 @@ namespace MdPad
                 previewFallback.Stop();
                 previewFallback.Start();
             }
-            catch { previewInitializing = false; }
+            catch (Exception ex)
+            {
+                previewInitializing = false;
+                LogSafe("[InitPreview] " + ex.ToString());
+            }
         }
 
         private void OnPreviewDocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
@@ -738,7 +960,9 @@ namespace MdPad
         private void RenderPreviewNow()
         {
             string baseDir = currentPath != null ? Path.GetDirectoryName(currentPath) : null;
-            string body = MarkdownRenderer.RenderBody(editor.Text, baseDir, hardBreak);
+            string body = editor.TextLength == 0
+                ? WelcomeBody()
+                : MarkdownRenderer.RenderBody(editor.Text, baseDir, hardBreak);
             try
             {
                 object y = preview.Document.InvokeScript("mdGetScroll");
@@ -758,13 +982,63 @@ namespace MdPad
         private void OnDebounceTick(object sender, EventArgs e)
         {
             debounce.Stop();
+            UpdateEditorScrollbars();
             RenderPreview(false);
+        }
+
+        /// <summary>
+        /// 不需要滚动时干脆不显示滚动条 —— Win32 滚动条的「禁用态」不走暗色主题，
+        /// 在深色界面上会留一条刺眼的白条（空文档时最明显）。
+        /// </summary>
+        private void UpdateEditorScrollbars()
+        {
+            if (editor == null || !editor.IsHandleCreated) return;
+            try
+            {
+                ScrollBars want = EditorNeedsScrollbar() ? ScrollBars.Vertical : ScrollBars.None;
+                if (editor.ScrollBars != want) editor.ScrollBars = want;   // 会重建句柄，可能失败
+            }
+            catch (Exception ex)
+            {
+                // 本机实测：改 ScrollBars 触发的句柄重建偶尔失败（「创建窗口句柄时出错」）。
+                // 这属于外观问题，绝不能让整个程序弹崩溃框 —— 保持原状即可。
+                LogSafe("[UpdateEditorScrollbars] " + ex.GetType().Name + " " + ex.Message);
+            }
+        }
+
+        private bool EditorNeedsScrollbar()
+        {
+            if (editor.TextLength == 0) return false;
+            if (editor.TextLength > 200000) return true;
+            int lineH = Math.Max(1, editor.Font.Height);
+            int visible = Math.Max(1, editor.ClientSize.Height / lineH);
+            string[] lines = editor.Text.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length > visible * 3) return true;          // 粗判：行数远超可视行数
+            if (!editor.WordWrap) return lines.Length > visible;
+            using (Graphics g = editor.CreateGraphics())
+            {
+                int w = Math.Max(40, editor.ClientSize.Width - 6);
+                int rows = 0;
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string t = lines[i];
+                    if (t.Length == 0) { rows++; }
+                    else
+                    {
+                        Size sz = TextRenderer.MeasureText(g, t, editor.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding);
+                        rows += Math.Max(1, (int)Math.Ceiling((double)sz.Width / w));
+                    }
+                    if (rows > visible) return true;
+                }
+                return rows > visible;
+            }
         }
 
         // ================================================================ 编辑区事件
 
         private void OnEditorTextChanged(object sender, EventArgs e)
         {
+            if (gutter != null) gutter.Invalidate();
             if (loading) return;
             SetDirty(true);
             debounce.Stop();
@@ -772,7 +1046,16 @@ namespace MdPad
             UpdateStatus();
         }
 
-        private void OnSelectionChangedLike(object sender, EventArgs e) { UpdateStatus(); }
+        private void OnEditorScrolled(object sender, EventArgs e)
+        {
+            if (gutter != null) gutter.Invalidate();
+        }
+
+        private void OnSelectionChangedLike(object sender, EventArgs e)
+        {
+            UpdateStatus();
+            if (gutter != null) gutter.Invalidate();
+        }
 
         private void OnEditorKeyDown(object sender, KeyEventArgs e)
         {
@@ -815,6 +1098,7 @@ namespace MdPad
             newline = "\r\n";
             SetDirty(false);
             UpdateTitle();
+            UpdateEditorScrollbars();
             RenderPreview(true);
         }
 
@@ -853,6 +1137,7 @@ namespace MdPad
                 SetDirty(false);
                 UpdateTitle();
                 SetupWatcher(path);
+                UpdateEditorScrollbars();
                 RenderPreview(true);
                 UpdateStatus();
                 if (addRecent) AddRecent(path);
@@ -1007,6 +1292,9 @@ namespace MdPad
 
         private void UpdateStatus()
         {
+            // 句柄还没建好时不要碰 GetLineFromCharIndex/TextLength 之类的 API，
+            // 否则会在窗体创建前强制 CreateHandle —— 实测会抛「创建窗口句柄时出错」。
+            if (editor == null || !editor.IsHandleCreated) return;
             stFile.Text = currentPath == null ? "未命名" : currentPath;
             stEnc.Text = fileEncoding.WebName.ToUpperInvariant() + (fileEncoding.GetPreamble().Length > 0 ? " (BOM)" : "") + " · " + (newline == "\r\n" ? "CRLF" : "LF");
             int line = editor.GetLineFromCharIndex(editor.SelectionStart) + 1;
@@ -1094,19 +1382,34 @@ namespace MdPad
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            if (splitterConfig > 0 && splitterConfig < split.Width - 120) split.SplitterDistance = splitterConfig;
-            else
+            Safe("OnShown", delegate
             {
-                try { split.SplitterDistance = Math.Max(200, split.Width / 2); }
-                catch { }
-            }
-            statusStrip.Visible = showStatusConfig;
-            miStatus.Checked = showStatusConfig;
-            miHardBreak.Checked = hardBreak;
-            ApplyWrap();
-            ApplyViewMode();
-            if (maxConfig) WindowState = FormWindowState.Maximized;
-            miStatus.Checked = statusStrip.Visible;
+                if (splitterConfig > 0 && splitterConfig < split.Width - 120) split.SplitterDistance = splitterConfig;
+                else
+                {
+                    try { split.SplitterDistance = Math.Max(200, split.Width / 2); }
+                    catch { }
+                }
+                statusStrip.Visible = showStatusConfig;
+                miStatus.Checked = showStatusConfig;
+                miHardBreak.Checked = hardBreak;
+                ApplyWrap();
+                ApplyTheme();
+                ApplyViewMode();
+                UpdateEditorScrollbars();
+                UpdateStatus();
+                if (maxConfig) WindowState = FormWindowState.Maximized;
+                miStatus.Checked = statusStrip.Visible;
+
+                // 文件打开放在最后（等窗体、预览、主题都就位），避免在 Shown 事件里提前建句柄
+                if (pendingFile != null)
+                {
+                    string f = pendingFile;
+                    pendingFile = null;
+                    Safe("open-on-start", delegate { OpenFile(f, true); });
+                }
+                else editor.Focus();
+            });
         }
 
         private void AddRecent(string path)
@@ -1321,19 +1624,37 @@ namespace MdPad
         }
     }
 
-    /// <summary>极简主题渲染器：把菜单 / 工具栏 / 状态栏刷成主题色（默认渲染器不认 BackColor）</summary>
+    /// <summary>Win11 风格的极简渲染器：透明感命令栏 + 圆角悬停高亮（默认渲染器不认 BackColor）</summary>
     internal sealed class MdPadRenderer : ToolStripProfessionalRenderer
     {
         private readonly Color bg;
         private readonly Color fg;
         private readonly bool dark;
+        private readonly Color hoverFill;
+        private readonly Color pressFill;
 
-        public MdPadRenderer(Color background, Color foreground, bool isDark)
+        public MdPadRenderer(Color background, Color foreground, bool isDark, Color hover, Color pressed)
             : base()
         {
             bg = background;
             fg = foreground;
             dark = isDark;
+            hoverFill = hover;
+            pressFill = pressed;
+        }
+
+        private static void FillRounded(Graphics g, Rectangle r, int radius, Color c)
+        {
+            using (System.Drawing.Drawing2D.GraphicsPath p = new System.Drawing.Drawing2D.GraphicsPath())
+            {
+                int d = radius * 2;
+                p.AddArc(r.X, r.Y, d, d, 180, 90);
+                p.AddArc(r.Right - d - 1, r.Y, d, d, 270, 90);
+                p.AddArc(r.Right - d - 1, r.Bottom - d - 1, d, d, 0, 90);
+                p.AddArc(r.X, r.Bottom - d - 1, d, d, 90, 90);
+                p.CloseFigure();
+                using (SolidBrush b = new SolidBrush(c)) g.FillPath(b, p);
+            }
         }
 
         protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
@@ -1344,7 +1665,7 @@ namespace MdPad
 
         protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
         {
-            using (Pen p = new Pen(dark ? Color.FromArgb(58, 58, 58) : Color.FromArgb(219, 219, 219)))
+            using (Pen p = new Pen(dark ? Color.FromArgb(61, 61, 61) : Color.FromArgb(227, 227, 227)))
                 e.Graphics.DrawLine(p, 0, e.ToolStrip.Height - 1, e.ToolStrip.Width, e.ToolStrip.Height - 1);
         }
 
@@ -1359,22 +1680,29 @@ namespace MdPad
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
             if (!e.Item.Selected && !e.Item.Pressed) return;
-            using (SolidBrush b = new SolidBrush(dark ? Color.FromArgb(55, 55, 55) : Color.FromArgb(225, 225, 225)))
-                e.Graphics.FillRectangle(b, new Rectangle(Point.Empty, e.Item.Size));
+            Rectangle r = new Rectangle(3, 1, e.Item.Width - 6, e.Item.Height - 2);
+            FillRounded(e.Graphics, r, 4, e.Item.Pressed ? pressFill : hoverFill);
         }
 
         protected override void OnRenderButtonBackground(ToolStripItemRenderEventArgs e)
         {
             if (!e.Item.Selected && !e.Item.Pressed) return;
-            using (SolidBrush b = new SolidBrush(dark ? Color.FromArgb(55, 55, 55) : Color.FromArgb(226, 226, 226)))
-                e.Graphics.FillRectangle(b, new Rectangle(Point.Empty, e.Item.Size));
+            Rectangle r = new Rectangle(2, 2, e.Item.Width - 5, e.Item.Height - 5);
+            FillRounded(e.Graphics, r, 4, e.Item.Pressed ? pressFill : hoverFill);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
         {
+            if (e.Vertical)
+            {
+                int x = e.Item.Width / 2;
+                using (Pen p = new Pen(dark ? Color.FromArgb(255, 255, 255, 24) : Color.FromArgb(0, 0, 0, 20)))
+                    e.Graphics.DrawLine(p, x, 8, x, e.Item.Height - 8);
+                return;
+            }
             int y = e.Item.Height / 2;
-            using (Pen p = new Pen(dark ? Color.FromArgb(70, 70, 70) : Color.FromArgb(205, 205, 205)))
-                e.Graphics.DrawLine(p, 3, y, e.Item.Width - 3, y);
+            using (Pen p2 = new Pen(dark ? Color.FromArgb(70, 70, 70) : Color.FromArgb(205, 205, 205)))
+                e.Graphics.DrawLine(p2, 3, y, e.Item.Width - 3, y);
         }
     }
 }

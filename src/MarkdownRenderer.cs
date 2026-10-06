@@ -466,14 +466,17 @@ namespace MdPad
             string fs = (14.0 * fontPercent / 100.0).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 
             string css = dark
-                ? @"body{background:#1b1b1b;color:#d8d8d8;}a{color:#6cb6ff;}code{background:#2a2a2a;border-color:#333;}pre{background:#242424;border-color:#333;}th,td{border-color:#3a3a3a;}th{background:#262626;}blockquote{color:#b0b0b0;border-left-color:#444;}hr{border-top-color:#3a3a3a;}input[type=checkbox]{filter:invert(0.85);}"
-                : @"body{background:#ffffff;color:#202020;}a{color:#0b57d0;}code{background:#f3f3f3;border-color:#e3e3e3;}pre{background:#f7f7f7;border-color:#e5e5e5;}th,td{border-color:#dcdcdc;}th{background:#f5f5f5;}blockquote{color:#555;border-left-color:#ddd;}hr{border-top-color:#e0e0e0;}";
+                ? @"body{background:#202020;color:#e8e8e8;}a{color:#6cb6ff;}code{background:#2b2b2b;border-color:#3a3a3a;}pre{background:#272727;border-color:#3a3a3a;}th,td{border-color:#3d3d3d;}th{background:#2b2b2b;}blockquote{color:#c0c0c0;border-left-color:#4a4a4a;}hr{border-top-color:#3d3d3d;}input[type=checkbox]{filter:invert(0.9);}"
+                : @"body{background:#ffffff;color:#1b1b1b;}a{color:#0067c0;}code{background:#f5f5f5;border-color:#e8e8e8;}pre{background:#fafafa;border-color:#ebebeb;}th,td{border-color:#e3e3e3;}th{background:#f7f7f7;}blockquote{color:#5a5a5a;border-left-color:#e0e0e0;}hr{border-top-color:#e8e8e8;}";
+            string extra = dark
+                ? @".welcome h1{color:#fff;}.welcome .muted{color:#a0a0a0;}.kbd{background:#2d2d2d;border-color:#444;color:#e8e8e8;}"
+                : @".welcome h1{color:#111;}.welcome .muted{color:#767676;}.kbd{background:#fff;border-color:#dcdcdc;color:#1b1b1b;}";
 
             StringBuilder sb = new StringBuilder();
             sb.Append("<!DOCTYPE html>\r\n<html><head><meta charset=\"utf-8\" />");
             sb.Append("<meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\" />");
             sb.Append("<style>\r\n");
-            sb.Append("html,body{margin:0;padding:0;} body{font-family:\"Segoe UI\",\"Microsoft YaHei UI\",\"Noto Sans SC\",sans-serif;font-size:").Append(fs).Append("px;line-height:1.75;padding:22px 30px 90px 30px;}");
+            sb.Append("html,body{margin:0;padding:0;} body{font-family:\"Segoe UI Variable Text\",\"Segoe UI\",\"Microsoft YaHei UI\",\"Noto Sans SC\",sans-serif;font-size:").Append(fs).Append("px;line-height:1.75;padding:22px 30px 90px 30px;}");
             sb.Append("#doc{max-width:900px;margin:0 auto;}");
             sb.Append("h1,h2,h3,h4,h5,h6{line-height:1.35;margin:1.2em 0 .6em;font-weight:600;}");
             sb.Append("h1{font-size:1.7em;border-bottom:1px solid ").Append(dark ? "#3a3a3a" : "#eee").Append(";padding-bottom:.25em;}");
@@ -490,7 +493,14 @@ namespace MdPad
             sb.Append("img{max-width:100%;} hr{border:none;border-top:1px solid;margin:1.6em 0;}");
             sb.Append("a{text-decoration:none;} a:hover{text-decoration:underline;}");
             sb.Append("input[type=checkbox]{vertical-align:-1px;margin-right:4px;}");
+            sb.Append(".welcome{padding-top:12px;}");
+            sb.Append(".welcome h1{font-size:2.1em;font-weight:600;margin:0 0 4px 0;border:none;}");
+            sb.Append(".welcome .muted{font-size:.94em;margin:0 0 26px 0;}");
+            sb.Append(".welcome table{border:none;}");
+            sb.Append(".welcome td{border:none;padding:5px 16px 5px 0;font-size:.94em;}");
+            sb.Append(".kbd{display:inline-block;font-family:\"Segoe UI Variable Text\",\"Segoe UI\",sans-serif;font-size:.86em;line-height:1.5;padding:0 7px;border:1px solid;border-radius:5px;margin-right:2px;}");
             sb.Append(css);
+            sb.Append(extra);
             sb.Append("\r\n</style>\r\n<script type=\"text/javascript\">\r\n");
             sb.Append("function mdGetScroll(){return (document.documentElement.scrollTop||document.body.scrollTop||0);}\r\n");
             sb.Append("function mdSetContent(h,y){var d=document.getElementById('doc');if(!d)return;d.innerHTML=h;window.scrollTo(0,y||0);}\r\n");
