@@ -520,7 +520,7 @@ namespace MdPad
             miThemeDark.Checked = themeMode == 2;
 
             Icon oldIcon = Icon;
-            Icon = MakeAppIcon();
+            Icon = LoadAppIcon();
             if (oldIcon != null) oldIcon.Dispose();
 
             // 句柄还没建好：预览、标题栏材质、滚动条主题都留到 OnShown 再应用，
@@ -615,6 +615,29 @@ namespace MdPad
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool DestroyIcon(IntPtr handle);
 
+        /// <summary>优先用仓库里那份多尺寸 mdpad.ico（tools\make-icon.ps1 生成），拿不到再退化成运行时绘制</summary>
+        private static Icon LoadAppIcon()
+        {
+            string[] paths = new string[]
+            {
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mdpad.ico"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mdpad", "mdpad.ico")
+            };
+            for (int i = 0; i < paths.Length; i++)
+            {
+                try
+                {
+                    if (File.Exists(paths[i]))
+                    {
+                        using (Icon src = new Icon(paths[i], 32, 32)) return (Icon)src.Clone();
+                    }
+                }
+                catch { }
+            }
+            return MakeAppIcon();
+        }
+
+        /// <summary>兜底图标（与 tools\make-icon.ps1 同一设计：圆角方形 + 渐变蓝 + M↓）</summary>
         private static Icon MakeAppIcon()
         {
             using (Bitmap bmp = new Bitmap(32, 32))
@@ -622,16 +645,27 @@ namespace MdPad
                 using (Graphics g = Graphics.FromImage(bmp))
                 {
                     g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                    using (SolidBrush b = new SolidBrush(Color.FromArgb(58, 122, 214)))
-                        g.FillEllipse(b, 0, 0, 31, 31);
-                    using (Font f = new Font("Segoe UI", 17, FontStyle.Bold, GraphicsUnit.Pixel))
-                    using (SolidBrush w = new SolidBrush(Color.White))
+                    g.Clear(Color.Transparent);
+                    System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath();
+                    int inset = 1, side = 30, r = 7;
+                    path.AddArc(inset, inset, r * 2, r * 2, 180, 90);
+                    path.AddArc(inset + side - r * 2, inset, r * 2, r * 2, 270, 90);
+                    path.AddArc(inset + side - r * 2, inset + side - r * 2, r * 2, r * 2, 0, 90);
+                    path.AddArc(inset, inset + side - r * 2, r * 2, r * 2, 90, 90);
+                    path.CloseFigure();
+                    using (System.Drawing.Drawing2D.LinearGradientBrush bg = new System.Drawing.Drawing2D.LinearGradientBrush(
+                        new Rectangle(0, 0, 32, 32), Color.FromArgb(88, 190, 255), Color.FromArgb(9, 84, 178), 90f))
+                        g.FillPath(bg, path);
+                    using (Pen p = new Pen(Color.White, 3f))
                     {
-                        StringFormat sf = new StringFormat();
-                        sf.Alignment = StringAlignment.Center;
-                        sf.LineAlignment = StringAlignment.Center;
-                        g.DrawString("M", f, w, new RectangleF(0, 1, 31, 31), sf);
+                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                        g.DrawLines(p, new PointF[] { new PointF(8f, 23f), new PointF(8f, 10f), new PointF(13.5f, 17f), new PointF(19f, 10f), new PointF(19f, 23f) });
+                        g.DrawLine(p, 25.5f, 11f, 25.5f, 19f);
+                        g.DrawLines(p, new PointF[] { new PointF(22.5f, 16f), new PointF(25.5f, 20f), new PointF(28.5f, 16f) });
                     }
+                    path.Dispose();
                 }
                 IntPtr h = bmp.GetHicon();
                 try { return (Icon)Icon.FromHandle(h).Clone(); }

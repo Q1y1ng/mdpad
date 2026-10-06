@@ -27,26 +27,16 @@ $ico = Join-Path $iconDir 'mdpad.ico'
 if (-not (Test-Path $exe)) { throw "找不到 $exe（先跑 build.cmd）" }
 if (-not (Test-Path $vbs)) { throw "找不到 $vbs" }
 
-Write-Host '=== 1) 生成图标 ===' -ForegroundColor Cyan
+Write-Host '=== 1) 安装图标（用仓库里那份 mdpad.ico） ===' -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $iconDir -Force | Out-Null
-Add-Type -AssemblyName System.Drawing
-$bmp = New-Object System.Drawing.Bitmap 48, 48
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$g.FillEllipse((New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(58, 122, 214))), 0, 0, 47, 47)
-$f = New-Object System.Drawing.Font('Segoe UI', 26, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-$sf = New-Object System.Drawing.StringFormat
-$sf.Alignment = [System.Drawing.StringAlignment]::Center
-$sf.LineAlignment = [System.Drawing.StringAlignment]::Center
-$g.DrawString('M', $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 1, 47, 47)), $sf)
-$g.Dispose()
-$hicon = $bmp.GetHicon()
-$icon = [System.Drawing.Icon]::FromHandle($hicon)
-$fs = [IO.File]::Create($ico)
-$icon.Save($fs)
-$fs.Close()
-$bmp.Dispose()
-Write-Host "  $ico  ($((Get-Item $ico).Length) 字节)"
+$repoIco = Join-Path $root 'mdpad.ico'
+if (-not (Test-Path $repoIco)) {
+  Write-Host '  仓库里没有 mdpad.ico，先用 tools\make-icon.ps1 生成…' -ForegroundColor Yellow
+  & (Join-Path $PSScriptRoot 'make-icon.ps1') | Out-Null
+}
+if (-not (Test-Path $repoIco)) { throw "图标生成失败：$repoIco" }
+Copy-Item -LiteralPath $repoIco -Destination $ico -Force
+Write-Host "  $ico  ($((Get-Item $ico).Length) 字节，源：$repoIco)"
 
 Write-Host '=== 2) 建快捷方式（指向 wscript.exe） ===' -ForegroundColor Cyan
 $desc = 'mdpad —— 记事本式 Markdown 编辑器'
