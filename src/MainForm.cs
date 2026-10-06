@@ -462,6 +462,85 @@ namespace MdPad
                 a = 34; DwmSetWindowAttribute(Handle, a, ref border, 4);
             }
             catch { }
+            ApplyDarkScrollbars();
+        }
+
+        // ---------------------------------------------------------------- 滚动条暗色
+        // 编辑框与 IE 预览的滚动条是 Win32 经典控件，不跟应用配色；
+        // 只能走 uxtheme 的暗色主题（SetWindowTheme + 未公开的 SetPreferredAppMode / AllowDarkModeForWindow）。
+
+        [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
+        private static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
+
+        [System.Runtime.InteropServices.DllImport("uxtheme.dll", EntryPoint = "#135", SetLastError = true)]
+        private static extern int SetPreferredAppMode(int appMode);
+
+        [System.Runtime.InteropServices.DllImport("uxtheme.dll", EntryPoint = "#133", SetLastError = true)]
+        private static extern bool AllowDarkModeForWindow(IntPtr hWnd, bool allow);
+
+        private delegate bool EnumWindowProc(IntPtr hWnd, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(IntPtr hWnd, EnumWindowProc lpEnumFunc, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        private void ApplyDarkScrollbars()
+        {
+            try
+            {
+                // 1 = AllowDark，2 = ForceDark，0 = Default
+                try { SetPreferredAppMode(isDarkTheme ? 2 : 0); }
+                catch { }
+
+                string sub = isDarkTheme ? "DarkMode_Explorer" : "";
+                IntPtr[] handles = new IntPtr[]
+                {
+                    Handle, editor.Handle, editorHost.Handle, split.Handle, split.Panel1.Handle,
+                    split.Panel2.Handle, preview.Handle, findBar.Handle, findBox.Handle, replBox.Handle
+                };
+                for (int i = 0; i < handles.Length; i++)
+                {
+                    if (handles[i] == IntPtr.Zero) continue;
+                    try { AllowDarkModeForWindow(handles[i], isDarkTheme); }
+                    catch { }
+                    ApplyWindowTheme(handles[i], sub);
+                }
+
+                // IE 的滚动条是 MSHTML 建出来的子窗口（类名 ScrollBar），要单独刷
+                for (int i = 0; i < handles.Length; i++)
+                    ApplyThemeToScrollbarChildren(handles[i], sub);
+            }
+            catch { }
+        }
+
+        private static void ApplyWindowTheme(IntPtr h, string sub)
+        {
+            try { SetWindowTheme(h, sub, sub); }
+            catch { }
+        }
+
+        private void ApplyThemeToScrollbarChildren(IntPtr parent, string sub)
+        {
+            if (parent == IntPtr.Zero) return;
+            try
+            {
+                EnumChildWindows(parent, delegate(IntPtr h, IntPtr l)
+                {
+                    StringBuilder sb = new StringBuilder(64);
+                    GetClassName(h, sb, sb.Capacity);
+                    string cls = sb.ToString();
+                    if (cls == "ScrollBar" || cls == "mshtml")
+                    {
+                        try { AllowDarkModeForWindow(h, isDarkTheme); }
+                        catch { }
+                        ApplyWindowTheme(h, sub);
+                    }
+                    return true;
+                }, IntPtr.Zero);
+            }
+            catch { }
         }
 
         [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
@@ -673,6 +752,7 @@ namespace MdPad
                 }
                 catch { }
             }
+            ApplyDarkScrollbars();      // IE 每次重排都会重建滚动条子窗口，渲染后补刷一次
         }
 
         private void OnDebounceTick(object sender, EventArgs e)

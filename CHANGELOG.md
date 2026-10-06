@@ -15,6 +15,9 @@
 - 窗口图标（运行时生成）、窗口双缓冲、编辑区内边距、默认分栏 50%
 
 ### 修复
+- **深色模式下滚动条仍是白色**（编辑框与 IE 预览）：Win32/IE 经典滚动条不跟应用配色
+  → `SetWindowTheme(hwnd,"DarkMode_Explorer",null)` + uxtheme 未公开序号
+  `#135 SetPreferredAppMode` / `#133 AllowDarkModeForWindow`，并枚举 IE 的 `ScrollBar` 子窗口在每次渲染后补刷
 - **主题切换后预览窗空白**：同一时刻重复设置 `WebBrowser.DocumentText` 会让 IE 不触发 `DocumentCompleted`
   → 加导航幂等守卫 + 1.5 s 兜底定时器
 - **保存带 BOM 的文件会丢 BOM**：`Encoding.GetBytes` 不含前导码，改为显式写入 `GetPreamble()`
