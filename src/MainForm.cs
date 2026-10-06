@@ -87,7 +87,6 @@ namespace MdPad
             KeyPreview = true;
 
             BuildUi();
-            LogSafe("ctor: after BuildUi form.IsHandleCreated=" + IsHandleCreated);
             ApplyFont();
             ApplyTheme();
             ApplyViewMode();
@@ -179,21 +178,10 @@ namespace MdPad
             editorHost = new Panel();
             editorHost.Dock = DockStyle.Fill;
             editorHost.Padding = new Padding(2, 10, 8, 10);
-            if (Environment.GetEnvironmentVariable("MDPAD_NOGUTTER") != "1")
-            {
-                gutter = new GutterPanel(editor);
-                gutter.Dock = DockStyle.Left;
-            }
-            editorHost.Controls.Add(editor);              // 先加填充控件
-            if (gutter != null) editorHost.Controls.Add(gutter);   // 再加左侧停靠控件
-            if (Environment.GetEnvironmentVariable("MDPAD_DIAG") == "1")
-            {
-                LogSafe(string.Format("diag: editor={0}x{1} host={2}x{3} panel1={4}x{5} gutterW={6} form={7}x{8}",
-                    editor.Width, editor.Height, editorHost.Width, editorHost.Height,
-                    split.Panel1.Width, split.Panel1.Height, gutter == null ? 0 : gutter.Width, Width, Height));
-                try { IntPtr hh = editor.Handle; LogSafe("diag: 预建 editor 句柄 OK " + hh); }
-                catch (Exception ex) { LogSafe("diag: 预建 editor 句柄失败: " + ex.GetType().Name + " " + ex.Message); }
-            }
+            gutter = new GutterPanel(editor);
+            gutter.Dock = DockStyle.Left;
+            editorHost.Controls.Add(editor);      // 先加填充控件
+            editorHost.Controls.Add(gutter);      // 再加左侧停靠控件
 
             editor.Multiline = true;
             editor.Dock = DockStyle.Fill;
@@ -584,31 +572,16 @@ namespace MdPad
         ///    序号随 Windows 版本漂移，本机 build 22631 上调用后会让 EDIT 控件再也建不出句柄
         ///    （表现：启动即「创建窗口句柄时出错」，实测 5 组开关矩阵定位）。
         /// </summary>
-        private static string Env(string k)
-        {
-            string v = Environment.GetEnvironmentVariable(k);
-            return v == null ? "" : v;
-        }
-
         private void ApplyDarkScrollbars()
         {
-            if (Env("MDPAD_NOSCROLLTHEME") == "1") return;
             try
             {
-                LogSafe(string.Format("ApplyDarkScrollbars: form={0} editor={1} preview={2} dark={3}",
-                    IsHandleCreated, editor.IsHandleCreated, preview.IsHandleCreated, isDarkTheme));
                 if (!IsHandleCreated) return;
                 string sub = isDarkTheme ? "DarkMode_Explorer" : "";
-                bool editorOnly = Env("MDPAD_THEME_EDITOR_ONLY") == "1";
-                bool previewOnly = Env("MDPAD_THEME_PREVIEW_ONLY") == "1";
-                bool noChildren = Env("MDPAD_THEME_NOCHILDREN") == "1";
-                if (!previewOnly) ThemeWindow(editor.Handle, sub);
-                if (!editorOnly) ThemeWindow(preview.Handle, sub);
-                if (!noChildren)
-                {
-                    if (!editorOnly) ThemeScrollbarChildren(preview.Handle, sub);
-                    if (!previewOnly) ThemeScrollbarChildren(editor.Handle, sub);
-                }
+                ThemeWindow(editor.Handle, sub);
+                ThemeWindow(preview.Handle, sub);
+                ThemeScrollbarChildren(preview.Handle, sub);   // IE 的滚动条是 MSHTML 建出来的子窗口
+                ThemeScrollbarChildren(editor.Handle, sub);
             }
             catch (Exception ex) { LogSafe("[ApplyDarkScrollbars] " + ex.ToString()); }
         }
