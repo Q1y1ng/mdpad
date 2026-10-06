@@ -40,6 +40,8 @@ namespace MdPad
         private ToolStripMenuItem miBoth;
         private Panel editorHost;
         private GutterPanel gutter;
+        private CollapseButton collapseBtn;
+        private readonly ToolTip tip = new ToolTip();
         private ToolStrip toolbar;
         private MenuStrip menuStrip;
         private ToolStripMenuItem miThemeFollow;
@@ -213,8 +215,14 @@ namespace MdPad
             split.SplitterWidth = 6;
             split.Panel1MinSize = 120;
             split.Panel2MinSize = 120;
-            split.Panel1.Controls.Add(editorHost);            split.Panel2.Controls.Add(preview);
+            split.Panel1.Controls.Add(editorHost);
+            split.Panel2.Controls.Add(preview);
             split.Panel2.BackColor = Color.White;
+
+            // 分栏边上的折叠按钮：把左边「原始文档」一栏收起来 —— 纯读 Markdown 时不挡地方
+            collapseBtn = new CollapseButton(IconFontName());
+            collapseBtn.Click += delegate { ToggleEditorPane(); };
+            split.Panel2.Controls.Add(collapseBtn);   // 后加 → 先停靠，占 Panel2 最左侧一条
 
             // ---- 查找/替换条
             findBar = new Panel();
@@ -303,6 +311,8 @@ namespace MdPad
             mView.DropDownItems.Add(miBoth);
             mView.DropDownItems.Add(miEditOnly);
             mView.DropDownItems.Add(miPreviewOnly);
+            mView.DropDownItems.Add(new ToolStripSeparator());
+            mView.DropDownItems.Add(Mi("折叠 / 展开左侧原始栏", Keys.F9, delegate { ToggleEditorPane(); }));
             mView.DropDownItems.Add(new ToolStripSeparator());
             miWrap = Mi("自动换行", Keys.None, delegate { ApplyWrap(); });
             miWrap.CheckOnClick = true;
@@ -414,6 +424,7 @@ namespace MdPad
             AddTb("编辑 + 预览（Ctrl+1）", "col2", delegate { viewMode = 0; ApplyViewMode(); });
             AddTb("仅编辑（Ctrl+2）", "col1", delegate { viewMode = 1; ApplyViewMode(); });
             AddTb("仅预览（Ctrl+3）", "eye", delegate { viewMode = 2; ApplyViewMode(); });
+            AddTb("折叠 / 展开左侧原始栏（F9）", "collapse", delegate { ToggleEditorPane(); });
             toolbar.Items.Add(new ToolStripSeparator());
             AddTb("查找 / 替换（Ctrl+F）", "find", delegate { ShowFindBar(false); });
             AddTb("切换浅色 / 深色", "theme", delegate { SetTheme(isDarkTheme ? 1 : 2); });
@@ -497,9 +508,16 @@ namespace MdPad
             statusStrip.ForeColor = fgChrome;
             foreach (ToolStripItem it in statusStrip.Items) it.ForeColor = fgChrome;
 
+            if (collapseBtn != null)
+            {
+                collapseBtn.SetTheme(bgChrome, fgChrome, isDarkTheme
+                    ? Color.FromArgb(18, 255, 255, 255) : Color.FromArgb(14, 0, 0, 0));
+                UpdateCollapseButton();
+            }
+
             MdPadRenderer r = new MdPadRenderer(bgChrome, fgChrome, isDarkTheme,
-                isDarkTheme ? Color.FromArgb(255, 255, 255, 18) : Color.FromArgb(0, 0, 0, 14),
-                isDarkTheme ? Color.FromArgb(255, 255, 255, 28) : Color.FromArgb(0, 0, 0, 24));
+                isDarkTheme ? Color.FromArgb(18, 255, 255, 255) : Color.FromArgb(14, 0, 0, 0),
+                isDarkTheme ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(24, 0, 0, 0));
             menuStrip.Renderer = r;
             toolbar.Renderer = r;
             statusStrip.Renderer = r;
@@ -578,10 +596,15 @@ namespace MdPad
             {
                 if (!IsHandleCreated) return;
                 string sub = isDarkTheme ? "DarkMode_Explorer" : "";
-                ThemeWindow(editor.Handle, sub);
-                ThemeWindow(preview.Handle, sub);
-                ThemeScrollbarChildren(preview.Handle, sub);   // IE 的滚动条是 MSHTML 建出来的子窗口
-                ThemeScrollbarChildren(editor.Handle, sub);
+                // ⚠️ 只给滚动条上主题，**不要**给 EDIT 控件本身套 DarkMode_Explorer：
+                //    实测给 EDIT 套主题后（尤其 subIdList 也传值这种非标准用法）会出现
+                //    「背景画出来、文字不画」的间歇性空白。
+                if (preview.IsHandleCreated)
+                {
+                    ThemeWindow(preview.Handle, sub);
+                    ThemeScrollbarChildren(preview.Handle, sub);   // IE 的滚动条是 MSHTML 建出来的子窗口
+                }
+                if (editor.IsHandleCreated) ThemeScrollbarChildren(editor.Handle, sub);
             }
             catch (Exception ex) { LogSafe("[ApplyDarkScrollbars] " + ex.ToString()); }
         }
@@ -589,7 +612,7 @@ namespace MdPad
         private static void ThemeWindow(IntPtr h, string sub)
         {
             if (h == IntPtr.Zero) return;
-            try { SetWindowTheme(h, sub, sub); }
+            try { SetWindowTheme(h, sub, null); }   // 标准用法：subIdList 传 null
             catch { }
         }
 
@@ -703,6 +726,7 @@ namespace MdPad
                 case "col2": text = "\uE8A9"; break;
                 case "col1": text = "\uEA37"; break;
                 case "eye": text = "\uE7B3"; break;
+                case "collapse": text = "\uE76B"; break;   // ChevronLeft
                 case "find": text = "\uE721"; break;
                 case "theme": text = isDarkTheme ? "\uE706" : "\uE708"; break;   // 深色时显示太阳（点击切浅色）
             }
@@ -827,6 +851,23 @@ namespace MdPad
             return bmp;
         }
 
+        /// <summary>折叠 / 展开左边的「原始文档」一栏（纯读 Markdown 时把编辑区收掉）</summary>
+        private void ToggleEditorPane()
+        {
+            viewMode = (viewMode == 2) ? 0 : 2;
+            ApplyViewMode();
+            try { if (viewMode == 0) editor.Focus(); else preview.Focus(); }
+            catch { }
+        }
+
+        private void UpdateCollapseButton()
+        {
+            if (collapseBtn == null) return;
+            bool collapsed = viewMode == 2;
+            collapseBtn.Glyph = collapsed ? "\uE76C" : "\uE76B";   // ChevronRight / ChevronLeft（Segoe Fluent Icons）
+            tip.SetToolTip(collapseBtn, collapsed ? "展开左侧原始栏（F9）" : "折叠左侧原始栏（F9）");
+        }
+
         private void ApplyWrap()
         {
             editor.WordWrap = miWrap.Checked;
@@ -849,6 +890,7 @@ namespace MdPad
             miEditOnly.Checked = viewMode == 1;
             miPreviewOnly.Checked = viewMode == 2;
             if (!IsHandleCreated) return;      // 句柄没建好之前绝不碰预览（否则会强制 CreateHandle 失败）
+            UpdateCollapseButton();
             if (viewMode != 1)
             {
                 if (!previewReady) InitPreview();
@@ -1703,7 +1745,7 @@ namespace MdPad
             if (e.Vertical)
             {
                 int x = e.Item.Width / 2;
-                using (Pen p = new Pen(dark ? Color.FromArgb(255, 255, 255, 24) : Color.FromArgb(0, 0, 0, 20)))
+                using (Pen p = new Pen(dark ? Color.FromArgb(24, 255, 255, 255) : Color.FromArgb(20, 0, 0, 0)))
                     e.Graphics.DrawLine(p, x, 8, x, e.Item.Height - 8);
                 return;
             }

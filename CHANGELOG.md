@@ -4,9 +4,22 @@
 
 ## [未发布]
 
+### 新增
+- **左侧「原始文档」栏可折叠**（纯读 Markdown 时把编辑区收掉，不挡地方）：
+  - 分栏边上新增**折叠按钮**（`src\CollapseButton.cs`，自绘控件，悬停淡灰高亮；折叠后箭头朝右，展开时朝左）
+  - 菜单 `查看 → 折叠 / 展开左侧原始栏` + 快捷键 **F9** + 工具栏按钮
+  - 与原有 `Ctrl+3 仅预览` 是同一套状态（`ViewMode`），状态会被记住
+
+### 修复
+- **悬停高亮是亮黄色**：`Color.FromArgb(255, 255, 255, 18)` 的 alpha 写在了第一个参数 → 实际是 A=255 的**不透明黄**（本意是 alpha 18 的淡白）。
+  修正为 `Color.FromArgb(18, 255, 255, 255)`（深色）/ `Color.FromArgb(14, 0, 0, 0)`（浅色），影响折叠按钮、工具栏、菜单悬停与竖向分隔线
+- 折叠按钮原本用 Win32 `Button`，深色模式下会被系统主题接管（`FlatStyle.Flat` + `UseVisualStyleBackColor` 的坑）→ 改自绘控件
+- `ApplyDarkScrollbars` 不再给 EDIT 控件本身套 `DarkMode_Explorer`（只刷滚动条子窗口），且 `SetWindowTheme` 的 subIdList 按标准用法传 `null`
+
 ### 变更
 - `tools\install-shell.ps1` 额外登记正式 ProgID **`MdPad.Document`**（在「打开方式」里显示为「Markdown 文档 (mdpad)」），
-  并加入 `.md/.markdown/.mdx` 的 `OpenWithProgids`（右键「打开方式」子菜单可见）
+  并加入 `.md/.markdown/.mdx` 的 `OpenWithProgids`（右键「打开方式」子菜单可见）；再注册为**已注册应用**
+  （`RegisteredApplications` + `Capabilities`），这样「设置 → 应用 → 默认应用」里以 **mdpad** 出现并可一键设为默认
 - 脚本末尾明确提示：**把 `.md` 的默认程序改成 mdpad 无法脚本化** —— `FileExts\.md\UserChoice` 有哈希保护，
   脚本写入会被系统忽略；只能由 Windows 自己写（「打开方式 → 始终」或「设置 → 默认应用」）
 
