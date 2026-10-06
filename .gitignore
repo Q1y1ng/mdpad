@@ -1,0 +1,9 @@
+# 构建产物
+*.exe
+*.pdb
+*.obj
+
+# 本地实验
+_tmp/
+*.user
+*.log
