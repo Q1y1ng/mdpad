@@ -41,6 +41,7 @@ namespace MdPad
         private Panel editorHost;
         private GutterPanel gutter;
         private CollapseButton collapseBtn;
+        private bool editorHandleRetried;
         private readonly ToolTip tip = new ToolTip();
         private ToolStrip toolbar;
         private MenuStrip menuStrip;
@@ -112,12 +113,13 @@ namespace MdPad
             });
         }
 
-        private static void ForceHandles(Control c)
+        private void ForceHandles(Control c)
         {
             try { IntPtr h = c.Handle; }
             catch (Exception ex)
             {
                 LogSafe("ForceHandles 失败: " + c.GetType().FullName + " [" + c.Name + "] " + ex.GetType().Name + " " + ex.Message);
+                if (c == editor) editorHandleRetried = true;   // 记下来：稍后要强制重排一次
                 return;
             }
             foreach (Control child in c.Controls) ForceHandles(child);
@@ -1003,7 +1005,30 @@ namespace MdPad
         {
             if (viewMode == 1) return;
             if (!previewReady) { InitPreview(); return; }
-            RenderPreviewNow();
+            if (force) RenderPreviewFull();      // 字号 / 深色预览这类要改 CSS 的，必须整页重写
+            else RenderPreviewNow();             // 正文变化走页内更新，保住滚动位置、也快
+        }
+
+        /// <summary>
+        /// 整页重写预览。⚠️ 不能用 RenderPreviewNow 里的 mdSetContent 代替：
+        /// 那只替换正文，CSS（字号、配色）改不了 —— 曾经导致「改字号预览没反应」。
+        /// </summary>
+        private void RenderPreviewFull()
+        {
+            string baseDir = currentPath != null ? Path.GetDirectoryName(currentPath) : null;
+            string body = editor.TextLength == 0
+                ? WelcomeBody()
+                : MarkdownRenderer.RenderBody(editor.Text, baseDir, hardBreak);
+            previewInitializing = true;          // 防止重复导航把 DocumentCompleted 吞掉
+            try
+            {
+                preview.DocumentText = MarkdownRenderer.WrapPage(body, darkPreview, fontPercent);
+            }
+            catch (Exception ex)
+            {
+                previewInitializing = false;
+                LogSafe("[RenderPreviewFull] " + ex.ToString());
+            }
         }
 
         private void RenderPreviewNow()
@@ -1458,6 +1483,25 @@ namespace MdPad
                     Safe("open-on-start", delegate { OpenFile(f, true); });
                 }
                 else editor.Focus();
+
+                // 本机实测：编辑框句柄走过「首次创建失败 → 稍后重试成功」这条路时，
+                // 左侧面板会停在未绘制状态（内部状态完全正常，就是屏幕上一片空白），
+                // 手动「折叠一次再展开」就恢复。这里自动做同样的动作，免得用户每次都要点一下。
+                if (editorHandleRetried)
+                {
+                    Safe("force-relayout", delegate
+                    {
+                        int d = split.SplitterDistance;
+                        split.Panel1Collapsed = true;
+                        split.Panel1Collapsed = false;
+                        try { if (d > 0 && d < split.Width - 120) split.SplitterDistance = d; }
+                        catch { }
+                        editorHost.PerformLayout();
+                        editor.Invalidate(); gutter.Invalidate(); editorHost.Invalidate(true);
+                        editor.Update(); gutter.Update(); editorHost.Update();
+                        LogSafe("force-relayout: 已强制重排左侧面板");
+                    });
+                }
             });
         }
 

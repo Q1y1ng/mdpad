@@ -11,6 +11,12 @@
   - 与原有 `Ctrl+3 仅预览` 是同一套状态（`ViewMode`），状态会被记住
 
 ### 修复
+- **首次打开左侧一片空白**（要手动「折叠一次再展开」才显示源码）：编辑框句柄走过「首次创建失败 → 稍后重试成功」这条路径时，
+  左侧面板会停在未绘制状态（内部状态完全正常，就是屏幕不画）→ 启动时自动补一次「折叠→展开 + 强制重排」
+  （`editorHandleRetried` 标记 + `force-relayout`）
+- **改字号只影响左边原始栏，右边渲染栏不变**：预览正文更新走的是页内 `mdSetContent`（只替换正文、保留滚动位置），
+  **改不了 CSS** → 字号 / 深色预览 / 单换行这类需要改样式的变化改为**整页重写**（新增 `RenderPreviewFull`，
+  `RenderPreview(true)` 走整页、`RenderPreview(false)` 走页内快速更新）
 - **悬停高亮是亮黄色**：`Color.FromArgb(255, 255, 255, 18)` 的 alpha 写在了第一个参数 → 实际是 A=255 的**不透明黄**（本意是 alpha 18 的淡白）。
   修正为 `Color.FromArgb(18, 255, 255, 255)`（深色）/ `Color.FromArgb(14, 0, 0, 0)`（浅色），影响折叠按钮、工具栏、菜单悬停与竖向分隔线
 - 折叠按钮原本用 Win32 `Button`，深色模式下会被系统主题接管（`FlatStyle.Flat` + `UseVisualStyleBackColor` 的坑）→ 改自绘控件
