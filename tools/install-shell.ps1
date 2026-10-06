@@ -75,6 +75,41 @@ Set-ItemProperty -Path $app -Name 'FriendlyAppName' -Value 'mdpad（Markdown 编
 Set-ItemProperty -Path "$app\shell\open\command" -Name '(Default)' -Value $cmd
 Write-Host '  Applications\mdpad.exe 已登记'
 
+# 正式 ProgID：让「打开方式」列表里显示为「Markdown 文档 (mdpad)」，
+# 并加进 .md/.markdown/.mdx 的 OpenWithProgids（右键「打开方式」子菜单可见）
+$prog = 'HKCU:\Software\Classes\MdPad.Document'
+New-Item -Path "$prog\shell\open\command" -Force | Out-Null
+Set-ItemProperty -Path $prog -Name '(Default)' -Value 'Markdown 文档 (mdpad)'
+Set-ItemProperty -Path $prog -Name 'FriendlyTypeName' -Value 'Markdown 文档 (mdpad)'
+Set-ItemProperty -Path $prog -Name 'DefaultIcon' -Value "$ico,0"
+Set-ItemProperty -Path "$prog\shell\open\command" -Name '(Default)' -Value $cmd
+foreach ($ext in @('.md', '.markdown', '.mdx')) {
+  $k = "HKCU:\Software\Classes\$ext\OpenWithProgids"
+  New-Item -Path $k -Force | Out-Null
+  New-ItemProperty -Path $k -Name 'MdPad.Document' -PropertyType String -Value '' -Force | Out-Null
+}
+Write-Host '  MdPad.Document 已登记并加入 OpenWithProgids'
+
+# 注册为「已注册应用」：这样「设置 → 应用 → 默认应用」里会以 **mdpad** 的名字出现，
+# 并提供一个「设置默认值」按钮，一次点完（Windows 自己写 UserChoice，不需要碰哈希）
+$cap = 'HKCU:\SOFTWARE\Classes\MdPad\Capabilities'
+New-Item -Path "$cap\FileAssociations" -Force | Out-Null
+Set-ItemProperty -Path $cap -Name 'ApplicationName' -Value 'mdpad'
+Set-ItemProperty -Path $cap -Name 'ApplicationDescription' -Value '记事本式 Markdown 编辑器：单 exe、零依赖、实时预览'
+Set-ItemProperty -Path "$cap\FileAssociations" -Name '.md' -Value 'MdPad.Document'
+Set-ItemProperty -Path "$cap\FileAssociations" -Name '.markdown' -Value 'MdPad.Document'
+Set-ItemProperty -Path "$cap\FileAssociations" -Name '.mdx' -Value 'MdPad.Document'
+New-Item -Path 'HKCU:\SOFTWARE\RegisteredApplications' -Force | Out-Null
+Set-ItemProperty -Path 'HKCU:\SOFTWARE\RegisteredApplications' -Name 'mdpad' -Value 'SOFTWARE\Classes\MdPad\Capabilities'
+Write-Host '  已注册为「已注册应用」mdpad（含 .md/.markdown/.mdx 能力声明）'
+
+Write-Host ''
+Write-Host '注意：把 .md 的【默认程序】改成 mdpad 无法用脚本完成 ——' -ForegroundColor Yellow
+Write-Host '      HKCU\...\FileExts\.md\UserChoice 有哈希保护，脚本写入会被系统忽略。' -ForegroundColor Yellow
+Write-Host '      请二选一（Windows 自己写这个键）：' -ForegroundColor Yellow
+Write-Host '        · 右键任意 .md → 打开方式 → 选择其他应用 → mdpad → 勾「始终」' -ForegroundColor Yellow
+Write-Host '        · 设置 → 应用 → 默认应用 → 搜索 “.md” → 选 mdpad' -ForegroundColor Yellow
+
 Write-Host ''
 Write-Host '完成。验收：' -ForegroundColor Green
 Write-Host "  · 双击桌面「mdpad」快捷方式 → 不应再出现 SmartScreen"

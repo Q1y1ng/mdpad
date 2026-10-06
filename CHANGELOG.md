@@ -4,6 +4,12 @@
 
 ## [未发布]
 
+### 变更
+- `tools\install-shell.ps1` 额外登记正式 ProgID **`MdPad.Document`**（在「打开方式」里显示为「Markdown 文档 (mdpad)」），
+  并加入 `.md/.markdown/.mdx` 的 `OpenWithProgids`（右键「打开方式」子菜单可见）
+- 脚本末尾明确提示：**把 `.md` 的默认程序改成 mdpad 无法脚本化** —— `FileExts\.md\UserChoice` 有哈希保护，
+  脚本写入会被系统忽略；只能由 Windows 自己写（「打开方式 → 始终」或「设置 → 默认应用」）
+
 ## [1.2.1] - 2026-10-07
 
 ### 变更
