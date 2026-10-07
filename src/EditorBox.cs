@@ -38,7 +38,7 @@ namespace MdPad
     /// <summary>行号槽：跟随编辑区滚动，按逻辑行编号（自动换行折出来的行不另编号）</summary>
     internal sealed class GutterPanel : Control
     {
-        private readonly TextBox source;
+        private TextBox source;
         private Color gutterBack = Color.White;
         private Color numberFg = Color.Gray;
         private Color borderFg = Color.Gainsboro;
@@ -50,6 +50,13 @@ namespace MdPad
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
                      ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
             Width = 46;
+        }
+
+        /// <summary>编辑框被重建时重新绑定（句柄丢失后的兜底路径）</summary>
+        public void SetSource(TextBox textSource)
+        {
+            source = textSource;
+            Invalidate();
         }
 
         public void SetTheme(Color back, Color number, Color border, Font font)

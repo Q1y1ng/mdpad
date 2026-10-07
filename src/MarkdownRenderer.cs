@@ -459,29 +459,47 @@ namespace MdPad
             }
         }
 
-        public static string WrapPage(string body, bool dark, int fontPercent)
+        /// <summary>预览正文字号（px）—— 与 CSS 里的基数保持一致，字号改动走页内 JS 用这个值</summary>
+        public static double BaseFontPx(int fontPercent)
         {
             if (fontPercent < 60) fontPercent = 60;
             if (fontPercent > 220) fontPercent = 220;
-            string fs = (14.0 * fontPercent / 100.0).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+            return 14.0 * fontPercent / 100.0;
+        }
 
-            string css = dark
-                ? @"body{background:#202020;color:#e8e8e8;}a{color:#6cb6ff;}code{background:#2b2b2b;border-color:#3a3a3a;}pre{background:#272727;border-color:#3a3a3a;}th,td{border-color:#3d3d3d;}th{background:#2b2b2b;}blockquote{color:#c0c0c0;border-left-color:#4a4a4a;}hr{border-top-color:#3d3d3d;}input[type=checkbox]{filter:invert(0.9);}"
-                : @"body{background:#ffffff;color:#1b1b1b;}a{color:#0067c0;}code{background:#f5f5f5;border-color:#e8e8e8;}pre{background:#fafafa;border-color:#ebebeb;}th,td{border-color:#e3e3e3;}th{background:#f7f7f7;}blockquote{color:#5a5a5a;border-left-color:#e0e0e0;}hr{border-top-color:#e8e8e8;}";
-            string extra = dark
-                ? @".welcome h1{color:#fff;}.welcome .muted{color:#a0a0a0;}.kbd{background:#2d2d2d;border-color:#444;color:#e8e8e8;}"
-                : @".welcome h1{color:#111;}.welcome .muted{color:#767676;}.kbd{background:#fff;border-color:#dcdcdc;color:#1b1b1b;}";
+        /// <summary>
+        /// 只跟配色有关的 CSS，单独成块（&lt;style id="md-theme"&gt;）：
+        /// 换主题时用页内 JS 换掉这一块即可，不必整页重载 —— 大文档下这是唯一不卡的做法。
+        /// </summary>
+        public static string ThemeCss(bool dark)
+        {
+            return dark
+                ? "body{background:#202020;color:#e8e8e8;}a{color:#6cb6ff;}code{background:#2b2b2b;border-color:#3a3a3a;}"
+                  + "pre{background:#272727;border-color:#3a3a3a;}th,td{border-color:#3d3d3d;}th{background:#2b2b2b;}"
+                  + "blockquote{color:#c0c0c0;border-left-color:#4a4a4a;}hr{border-top-color:#3d3d3d;}input[type=checkbox]{filter:invert(0.9);}"
+                  + "h1{border-bottom-color:#3a3a3a;}h2{border-bottom-color:#333;}h5,h6{color:#aaa;}"
+                  + ".welcome h1{color:#fff;}.welcome .muted{color:#a0a0a0;}.kbd{background:#2d2d2d;border-color:#444;color:#e8e8e8;}"
+                : "body{background:#ffffff;color:#1b1b1b;}a{color:#0067c0;}code{background:#f5f5f5;border-color:#e8e8e8;}"
+                  + "pre{background:#fafafa;border-color:#ebebeb;}th,td{border-color:#e3e3e3;}th{background:#f7f7f7;}"
+                  + "blockquote{color:#5a5a5a;border-left-color:#e0e0e0;}hr{border-top-color:#e8e8e8;}"
+                  + "h1{border-bottom-color:#eee;}h2{border-bottom-color:#f0f0f0;}h5,h6{color:#666;}"
+                  + ".welcome h1{color:#111;}.welcome .muted{color:#767676;}.kbd{background:#fff;border-color:#dcdcdc;color:#1b1b1b;}";
+        }
+
+        public static string WrapPage(string body, bool dark, int fontPercent)
+        {
+            string fs = BaseFontPx(fontPercent).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 
             StringBuilder sb = new StringBuilder();
             sb.Append("<!DOCTYPE html>\r\n<html><head><meta charset=\"utf-8\" />");
             sb.Append("<meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\" />");
-            sb.Append("<style>\r\n");
+            sb.Append("<style id=\"md-base\">\r\n");
             sb.Append("html,body{margin:0;padding:0;} body{font-family:\"Segoe UI Variable Text\",\"Segoe UI\",\"Microsoft YaHei UI\",\"Noto Sans SC\",sans-serif;font-size:").Append(fs).Append("px;line-height:1.75;padding:22px 30px 90px 30px;}");
             sb.Append("#doc{max-width:900px;margin:0 auto;}");
             sb.Append("h1,h2,h3,h4,h5,h6{line-height:1.35;margin:1.2em 0 .6em;font-weight:600;}");
-            sb.Append("h1{font-size:1.7em;border-bottom:1px solid ").Append(dark ? "#3a3a3a" : "#eee").Append(";padding-bottom:.25em;}");
-            sb.Append("h2{font-size:1.42em;border-bottom:1px solid ").Append(dark ? "#333" : "#f0f0f0").Append(";padding-bottom:.2em;}");
-            sb.Append("h3{font-size:1.2em;} h4{font-size:1.06em;} h5,h6{font-size:1em;color:").Append(dark ? "#aaa" : "#666").Append(";}");
+            sb.Append("h1{font-size:1.7em;border-bottom:1px solid;padding-bottom:.25em;}");
+            sb.Append("h2{font-size:1.42em;border-bottom:1px solid;padding-bottom:.2em;}");
+            sb.Append("h3{font-size:1.2em;} h4{font-size:1.06em;} h5,h6{font-size:1em;}");
             sb.Append("p{margin:.65em 0;}");
             sb.Append("code{font-family:\"Cascadia Mono\",Consolas,\"Courier New\",monospace;font-size:.92em;padding:1px 5px;border:1px solid;border-radius:4px;}");
             sb.Append("pre{font-family:\"Cascadia Mono\",Consolas,\"Courier New\",monospace;font-size:.9em;line-height:1.6;padding:12px 14px;border:1px solid;border-radius:8px;overflow-x:auto;}");
@@ -499,12 +517,15 @@ namespace MdPad
             sb.Append(".welcome table{border:none;}");
             sb.Append(".welcome td{border:none;padding:5px 16px 5px 0;font-size:.94em;}");
             sb.Append(".kbd{display:inline-block;font-family:\"Segoe UI Variable Text\",\"Segoe UI\",sans-serif;font-size:.86em;line-height:1.5;padding:0 7px;border:1px solid;border-radius:5px;margin-right:2px;}");
-            sb.Append(css);
-            sb.Append(extra);
-            sb.Append("\r\n</style>\r\n<script type=\"text/javascript\">\r\n");
+            sb.Append("\r\n</style>\r\n<style id=\"md-theme\">");
+            sb.Append(ThemeCss(dark));
+            sb.Append("</style>\r\n<script type=\"text/javascript\">\r\n");
             sb.Append("function mdGetScroll(){return (document.documentElement.scrollTop||document.body.scrollTop||0);}\r\n");
             sb.Append("function mdSetContent(h,y){var d=document.getElementById('doc');if(!d)return;d.innerHTML=h;window.scrollTo(0,y||0);}\r\n");
             sb.Append("function mdScrollTo(y){window.scrollTo(0,y||0);}\r\n");
+            // 字号 / 主题都只改 CSS，不重载页面（大文档重载一次要好几秒）
+            sb.Append("function mdSetFontSize(px){document.body.style.fontSize=px+'px';}\r\n");
+            sb.Append("function mdSetTheme(css){var s=document.getElementById('md-theme');if(s)s.textContent=css;}\r\n");
             sb.Append("</script>\r\n</head>\r\n<body><div id=\"doc\">").Append(body).Append("</div></body></html>");
             return sb.ToString();
         }

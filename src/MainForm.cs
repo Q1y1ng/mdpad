@@ -16,7 +16,7 @@ namespace MdPad
     internal sealed class MainForm : Form
     {
         // ---------------- 控件
-        private readonly EditorBox editor = new EditorBox();
+        private EditorBox editor = new EditorBox();
         private readonly WebBrowser preview = new WebBrowser();
         private readonly SplitContainer split = new SplitContainer();
         private readonly Timer debounce = new Timer();
@@ -40,8 +40,17 @@ namespace MdPad
         private ToolStripMenuItem miBoth;
         private Panel editorHost;
         private GutterPanel gutter;
+        private Panel scrollCover;      // 盖住「不需要滚动时那条禁用态白滚动条」
         private CollapseButton collapseBtn;
         private bool editorHandleRetried;
+
+        // ---- 大文件模式：IE 预览 + 正则渲染在 MB 级文档上很慢，超过阈值就暂停自动预览
+        private const int LargeDocChars = 300 * 1024;       // 约 300 KB 起算大文件
+        private const int LargePreviewChars = 200 * 1024;   // 手动渲染时只渲染前 200 KB
+        private bool largeDoc;
+        private bool largePreviewRequested;
+        private bool largePlaceholderShown;
+        private long currentBytes;
         private readonly ToolTip tip = new ToolTip();
         private ToolStrip toolbar;
         private MenuStrip menuStrip;
@@ -187,10 +196,19 @@ namespace MdPad
             editorHost.Controls.Add(editor);      // 先加填充控件
             editorHost.Controls.Add(gutter);      // 再加左侧停靠控件
 
+            // 覆盖条：不参与停靠布局，直接浮在编辑框右边缘那条滚动条上面
+            scrollCover = new Panel();
+            scrollCover.Width = SystemInformation.VerticalScrollBarWidth;
+            scrollCover.Visible = false;
+            scrollCover.TabStop = false;
+            editorHost.Controls.Add(scrollCover);
+            scrollCover.BringToFront();
+            editorHost.Resize += delegate { UpdateEditorScrollbars(); };
+
             editor.Multiline = true;
             editor.Dock = DockStyle.Fill;
             editor.BorderStyle = BorderStyle.None;
-            editor.ScrollBars = ScrollBars.Both;
+            editor.ScrollBars = ScrollBars.Vertical;   // ⚠️ 只在建句柄前设一次，运行期绝不再改（会重建句柄）
             editor.WordWrap = true;
             editor.AcceptsReturn = true;
             editor.AcceptsTab = true;
@@ -339,7 +357,9 @@ namespace MdPad
             mView.DropDownItems.Add(new ToolStripSeparator());
             mView.DropDownItems.Add(Mi("放大字号", Keys.Control | Keys.Oemplus, delegate { Zoom(1); }));
             mView.DropDownItems.Add(Mi("缩小字号", Keys.Control | Keys.OemMinus, delegate { Zoom(-1); }));
-            mView.DropDownItems.Add(Mi("重置字号", Keys.Control | Keys.D0, delegate { fontPercent = 100; ApplyFont(); RenderPreview(true); }));
+            mView.DropDownItems.Add(Mi("重置字号", Keys.Control | Keys.D0, delegate { fontPercent = 100; ApplyFont(); ApplyPreviewFont(); }));
+            mView.DropDownItems.Add(new ToolStripSeparator());
+            mView.DropDownItems.Add(Mi("渲染预览（大文件只渲染前 200 KB）", Keys.Control | Keys.R, delegate { RenderLargePreviewNow(); }));
 
             ToolStripMenuItem mFmt = new ToolStripMenuItem("格式(&O)");
             mFmt.DropDownItems.Add(Mi("标题 1", Keys.None, delegate { PrefixLine("# "); }));
@@ -547,9 +567,18 @@ namespace MdPad
             // 否则会在这里强制 CreateHandle（WebBrowser/TextBox 都可能失败）。
             if (!IsHandleCreated) return;
 
-            previewReady = false;
-            previewInitializing = false;
-            if (viewMode != 1) InitPreview();
+            if (previewReady && viewMode != 1)
+            {
+                // 预览已经在跑：页内换配色 + 对齐字号，不重载页面（大文档重载一次要好几秒）
+                ApplyPreviewTheme();
+                ApplyPreviewFont();
+            }
+            else
+            {
+                previewReady = false;
+                previewInitializing = false;
+                if (viewMode != 1) InitPreview();
+            }
             ApplyDwm();
         }
 
@@ -578,6 +607,17 @@ namespace MdPad
         [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
         private static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
 
+        // uxtheme 未公开导出（序号 135 = SetPreferredAppMode、133 = AllowDarkModeForWindow）：
+        // 0=默认 1=允许暗色 2=强制暗色。让 EDIT 控件自带的滚动条变暗需要这两个一起用，
+        // 只调 SetWindowTheme 管不到 EDIT 自己的滚动条。
+        // ⚠️ 早前曾怀疑它们导致「EDIT 建不出句柄」，后来查明真凶是 WordWrap/ScrollBars 触发的
+        //    句柄重建失败，与本调用无关；这里都包了 try/catch，调用失败也不影响功能。
+        [System.Runtime.InteropServices.DllImport("uxtheme.dll", EntryPoint = "#135", SetLastError = true)]
+        private static extern int SetPreferredAppMode(int appMode);
+
+        [System.Runtime.InteropServices.DllImport("uxtheme.dll", EntryPoint = "#133", SetLastError = true)]
+        private static extern bool AllowDarkModeForWindow(IntPtr hWnd, bool allow);
+
         private delegate bool EnumWindowProc(IntPtr hWnd, IntPtr lParam);
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -587,10 +627,9 @@ namespace MdPad
         private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
         /// <summary>
-        /// 深色滚动条：只用公开的 SetWindowTheme(hwnd, "DarkMode_Explorer", null)。
-        /// ⚠️ 千万不要用 uxtheme 的未公开序号（#135 SetPreferredAppMode / #133 AllowDarkModeForWindow）：
-        ///    序号随 Windows 版本漂移，本机 build 22631 上调用后会让 EDIT 控件再也建不出句柄
-        ///    （表现：启动即「创建窗口句柄时出错」，实测 5 组开关矩阵定位）。
+        /// 深色滚动条。EDIT 控件自带的滚动条不是子窗口，只调 SetWindowTheme 管不到它，
+        /// 必须同时：① 进程级 SetPreferredAppMode(2) ② 控件级 AllowDarkModeForWindow ③ SetWindowTheme。
+        /// IE 的滚动条则是 MSHTML 建出来的 ScrollBar 子窗口，要枚举补刷。
         /// </summary>
         private void ApplyDarkScrollbars()
         {
@@ -598,17 +637,23 @@ namespace MdPad
             {
                 if (!IsHandleCreated) return;
                 string sub = isDarkTheme ? "DarkMode_Explorer" : "";
-                // ⚠️ 只给滚动条上主题，**不要**给 EDIT 控件本身套 DarkMode_Explorer：
-                //    实测给 EDIT 套主题后（尤其 subIdList 也传值这种非标准用法）会出现
-                //    「背景画出来、文字不画」的间歇性空白。
-                if (preview.IsHandleCreated)
-                {
-                    ThemeWindow(preview.Handle, sub);
-                    ThemeScrollbarChildren(preview.Handle, sub);   // IE 的滚动条是 MSHTML 建出来的子窗口
-                }
+                try { SetPreferredAppMode(isDarkTheme ? 2 : 0); }
+                catch (Exception ex) { LogSafe("[SetPreferredAppMode] " + ex.Message); }
+                if (editor.IsHandleCreated) DarkenWindow(editor.Handle, sub);
+                if (preview.IsHandleCreated) DarkenWindow(preview.Handle, sub);
                 if (editor.IsHandleCreated) ThemeScrollbarChildren(editor.Handle, sub);
+                if (preview.IsHandleCreated) ThemeScrollbarChildren(preview.Handle, sub);
             }
             catch (Exception ex) { LogSafe("[ApplyDarkScrollbars] " + ex.ToString()); }
+        }
+
+        /// <summary>控件级暗色：AllowDarkModeForWindow + SetWindowTheme（两个都要，缺一滚动条不变色）</summary>
+        private void DarkenWindow(IntPtr h, string sub)
+        {
+            if (h == IntPtr.Zero) return;
+            try { AllowDarkModeForWindow(h, isDarkTheme); }
+            catch { }
+            ThemeWindow(h, sub);
         }
 
         private static void ThemeWindow(IntPtr h, string sub)
@@ -872,16 +917,7 @@ namespace MdPad
 
         private void ApplyWrap()
         {
-            editor.WordWrap = miWrap.Checked;
-            try
-            {
-                editor.ScrollBars = editor.WordWrap ? ScrollBars.Vertical : ScrollBars.Both;
-            }
-            catch (Exception ex)
-            {
-                // 改 ScrollBars 会重建句柄，本机偶发失败；这是外观问题，不能影响其它初始化
-                LogSafe("[ApplyWrap] " + ex.GetType().Name + " " + ex.Message);
-            }
+            SetEditorWrapSafe(miWrap.Checked);
         }
 
         private void ApplyViewMode()
@@ -914,7 +950,28 @@ namespace MdPad
             editor.Font = new Font(fam, pt, FontStyle.Regular);
             if (old != null) old.Dispose();
             ApplyGutter();
-            if (previewReady) RenderPreview(true);
+            ApplyPreviewFont();     // 只改 CSS，不重载页面 —— 大文档下重载一次要好几秒
+        }
+
+        /// <summary>页内改字号：body 的 font-size 一改，标题/代码/表格都是 em 相对单位，整体跟着缩放</summary>
+        private void ApplyPreviewFont()
+        {
+            if (!previewReady || viewMode == 1) return;
+            try
+            {
+                string fs = MarkdownRenderer.BaseFontPx(fontPercent)
+                    .ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+                preview.Document.InvokeScript("mdSetFontSize", new object[] { fs });
+            }
+            catch (Exception ex) { LogSafe("[ApplyPreviewFont] " + ex.Message); }
+        }
+
+        /// <summary>页内换主题配色（同样不重载页面）</summary>
+        private void ApplyPreviewTheme()
+        {
+            if (!previewReady || viewMode == 1) return;
+            try { preview.Document.InvokeScript("mdSetTheme", new object[] { MarkdownRenderer.ThemeCss(darkPreview) }); }
+            catch { RenderPreview(true); }
         }
 
         /// <summary>行号槽：字体比正文小 1.5pt，配色跟主题</summary>
@@ -949,7 +1006,9 @@ namespace MdPad
             fontPercent += delta * 10;
             if (fontPercent < 60) fontPercent = 60;
             if (fontPercent > 220) fontPercent = 220;
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
             ApplyFont();
+            LogSafe("Zoom: " + fontPercent + "% 用时 " + sw.ElapsedMilliseconds + "ms（大文件=" + largeDoc + " 自动换行=" + editor.WordWrap + "）");
         }
 
         // ================================================================ 预览
@@ -1004,21 +1063,91 @@ namespace MdPad
         private void RenderPreview(bool force)
         {
             if (viewMode == 1) return;
+            if (largeDoc && !largePreviewRequested)
+            {
+                // 大文件默认不渲染：占位页只写一次，之后打字都不再动它（否则每次停顿都要重排一遍）
+                if (!largePlaceholderShown) ShowLargeDocPlaceholder();
+                return;
+            }
             if (!previewReady) { InitPreview(); return; }
-            if (force) RenderPreviewFull();      // 字号 / 深色预览这类要改 CSS 的，必须整页重写
+            if (force) RenderPreviewFull();
             else RenderPreviewNow();             // 正文变化走页内更新，保住滚动位置、也快
         }
 
-        /// <summary>
-        /// 整页重写预览。⚠️ 不能用 RenderPreviewNow 里的 mdSetContent 代替：
-        /// 那只替换正文，CSS（字号、配色）改不了 —— 曾经导致「改字号预览没反应」。
-        /// </summary>
-        private void RenderPreviewFull()
+        /// <summary>大文件占位页</summary>
+        private void ShowLargeDocPlaceholder()
+        {
+            largePlaceholderShown = true;
+            string html = MarkdownRenderer.WrapPage(LargeDocPlaceholderBody(), darkPreview, fontPercent);
+            previewInitializing = true;
+            try
+            {
+                // 用 OpenNew + Write 同步写文档：不依赖 DocumentCompleted
+                // （IE 在短时间内被连续导航时会吞掉该事件，表现就是预览窗一片空白）
+                preview.Document.OpenNew(true);
+                preview.Document.Write(html);
+                previewInitializing = false;
+                previewReady = true;
+                ApplyDarkScrollbars();
+                LogSafe("ShowLargeDocPlaceholder: 占位页已写入");
+            }
+            catch (Exception ex)
+            {
+                previewInitializing = false;
+                LogSafe("[ShowLargeDocPlaceholder] " + ex.ToString());
+                try { preview.DocumentText = html; } catch { }
+            }
+        }
+
+        /// <summary>手动渲染大文件预览（Ctrl+R）：只渲染前若干 KB，避免 IE 卡死</summary>
+        private void RenderLargePreviewNow()
+        {
+            if (!largeDoc) { RenderPreview(true); return; }
+            largePreviewRequested = true;
+            largePlaceholderShown = false;
+            RenderPreviewFull();
+        }
+
+        private string LargeDocPlaceholderBody()
+        {
+            string size = currentBytes > 0
+                ? (currentBytes / 1048576.0).ToString("0.##") + " MB"
+                : (editor.TextLength / 1024) + " KB";
+            return "<div class=\"welcome\"><h1>大文件模式</h1>"
+                 + "<p class=\"muted\">这份文档 " + size + "（" + editor.TextLength + " 字符）。预览用的是系统 IE 内核，"
+                 + "渲染这么大的文档会卡，所以已暂停自动预览 —— 左侧原始栏编辑、查找、保存都正常。</p><table>"
+                 + "<tr><td><span class=\"kbd\">Ctrl+R</span></td><td>渲染预览（只渲染前 " + (LargePreviewChars / 1024) + " KB）</td></tr>"
+                 + "<tr><td><span class=\"kbd\">Ctrl+2</span></td><td>仅编辑（最快）</td></tr>"
+                 + "<tr><td><span class=\"kbd\">Ctrl+F</span></td><td>查找 / 替换</td></tr>"
+                 + "</table><p class=\"muted\">大文件下已自动关闭「自动换行」；改字号只改 CSS，不重载页面。</p></div>";
+        }
+
+        /// <summary>当前该渲染的正文（大文件走占位页 / 截断渲染）</summary>
+        private string PreviewBody()
         {
             string baseDir = currentPath != null ? Path.GetDirectoryName(currentPath) : null;
-            string body = editor.TextLength == 0
+            if (largeDoc)
+            {
+                if (!largePreviewRequested) return LargeDocPlaceholderBody();
+                string t = editor.Text;
+                int cut = LargePreviewChars;
+                bool truncated = t.Length > cut;
+                if (truncated) t = t.Substring(0, cut);
+                string inner = MarkdownRenderer.RenderBody(t, baseDir, hardBreak);
+                if (!truncated) return inner;
+                return "<div class=\"muted\" style=\"border:1px solid;border-radius:8px;padding:8px 12px;margin-bottom:16px;\">"
+                     + "已截断：只渲染前 " + (cut / 1024) + " KB（文件共 " + (editor.TextLength / 1024)
+                     + " KB）。完整内容请看左侧原始栏。</div>" + inner;
+            }
+            return editor.TextLength == 0
                 ? WelcomeBody()
                 : MarkdownRenderer.RenderBody(editor.Text, baseDir, hardBreak);
+        }
+
+        /// <summary>整页重写预览（字号/主题现在都走页内 JS，这里只用于换文档、手动渲染等场景）</summary>
+        private void RenderPreviewFull()
+        {
+            string body = PreviewBody();
             previewInitializing = true;          // 防止重复导航把 DocumentCompleted 吞掉
             try
             {
@@ -1033,10 +1162,7 @@ namespace MdPad
 
         private void RenderPreviewNow()
         {
-            string baseDir = currentPath != null ? Path.GetDirectoryName(currentPath) : null;
-            string body = editor.TextLength == 0
-                ? WelcomeBody()
-                : MarkdownRenderer.RenderBody(editor.Text, baseDir, hardBreak);
+            string body = PreviewBody();
             try
             {
                 object y = preview.Document.InvokeScript("mdGetScroll");
@@ -1066,46 +1192,141 @@ namespace MdPad
         /// </summary>
         private void UpdateEditorScrollbars()
         {
-            if (editor == null || !editor.IsHandleCreated) return;
+            // ⚠️ 不要用 editor.ScrollBars = None 来"隐藏"滚动条：该属性在 WinForms 里会
+            //    销毁并重建 EDIT 句柄，本机实测重建会失败 → 句柄丢失 → 左侧一片空白、聚焦/重绘全崩。
+            //    改用一条主题色覆盖条把「不需要滚动时那条禁用态白滚动条」盖住。
+            if (scrollCover == null || editor == null || !editor.IsHandleCreated) return;
             try
             {
-                ScrollBars want = EditorNeedsScrollbar() ? ScrollBars.Vertical : ScrollBars.None;
-                if (editor.ScrollBars != want) editor.ScrollBars = want;   // 会重建句柄，可能失败
+                bool need = EditorNeedsScrollbar();
+                // 覆盖条浮在编辑框右边缘的滚动条位置上（不参与停靠，否则会把编辑框挤窄）
+                scrollCover.Bounds = new Rectangle(editor.Right - scrollCover.Width, editor.Top,
+                                                   scrollCover.Width, editor.Height);
+                scrollCover.BackColor = editor.BackColor;
+                if (scrollCover.Visible == need) scrollCover.Visible = !need;
+                if (!need) scrollCover.BringToFront();
             }
-            catch (Exception ex)
-            {
-                // 本机实测：改 ScrollBars 触发的句柄重建偶尔失败（「创建窗口句柄时出错」）。
-                // 这属于外观问题，绝不能让整个程序弹崩溃框 —— 保持原状即可。
-                LogSafe("[UpdateEditorScrollbars] " + ex.GetType().Name + " " + ex.Message);
-            }
+            catch (Exception ex) { LogSafe("[UpdateEditorScrollbars] " + ex.Message); }
         }
 
+        /// <summary>是否需要滚动条 —— 只做有界量的判断，绝不对整篇文本做 Split（2 MB 会炸）</summary>
         private bool EditorNeedsScrollbar()
         {
             if (editor.TextLength == 0) return false;
-            if (editor.TextLength > 200000) return true;
+            if (editor.TextLength > 40000) return true;          // 超过 40 KB 基本一定需要滚动
             int lineH = Math.Max(1, editor.Font.Height);
             int visible = Math.Max(1, editor.ClientSize.Height / lineH);
-            string[] lines = editor.Text.Replace("\r\n", "\n").Split('\n');
-            if (lines.Length > visible * 3) return true;          // 粗判：行数远超可视行数
-            if (!editor.WordWrap) return lines.Length > visible;
+            string t = editor.Text;
+            int lines = 1;
+            for (int i = 0; i < t.Length; i++) if (t[i] == '\n') lines++;
+            if (lines > visible) return true;
+            if (!editor.WordWrap) return false;
             using (Graphics g = editor.CreateGraphics())
             {
                 int w = Math.Max(40, editor.ClientSize.Width - 6);
-                int rows = 0;
-                for (int i = 0; i < lines.Length; i++)
+                int rows = 0, start = 0;
+                while (start <= t.Length)
                 {
-                    string t = lines[i];
-                    if (t.Length == 0) { rows++; }
+                    int nl = t.IndexOf('\n', start);
+                    string line = nl < 0 ? t.Substring(start) : t.Substring(start, nl - start);
+                    if (line.Length == 0) rows++;
                     else
                     {
-                        Size sz = TextRenderer.MeasureText(g, t, editor.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding);
+                        Size sz = TextRenderer.MeasureText(g, line, editor.Font,
+                            new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding);
                         rows += Math.Max(1, (int)Math.Ceiling((double)sz.Width / w));
                     }
                     if (rows > visible) return true;
+                    if (nl < 0) break;
+                    start = nl + 1;
                 }
                 return rows > visible;
             }
+        }
+
+        /// <summary>
+        /// 安全地改「自动换行」：WordWrap 在 WinForms 里同样会重建 EDIT 句柄，
+        /// 而本机实测重建会失败。改完检查句柄，丢了就把编辑框整个重建出来。
+        /// </summary>
+        private void SetEditorWrapSafe(bool wrap)
+        {
+            if (editor == null) return;
+            if (editor.WordWrap == wrap)
+            {
+                miWrap.Checked = wrap;
+                return;
+            }
+            try
+            {
+                editor.WordWrap = wrap;
+                if (editor.IsHandleCreated) { miWrap.Checked = wrap; return; }
+                LogSafe("[SetEditorWrapSafe] 改 WordWrap 后句柄丢失，重建编辑框");
+            }
+            catch (Exception ex)
+            {
+                LogSafe("[SetEditorWrapSafe] " + ex.GetType().Name + " " + ex.Message + " → 重建编辑框");
+            }
+            RebuildEditor();
+        }
+
+        /// <summary>
+        /// 重建编辑框（句柄丢了以后的兜底）：新控件、迁文本与光标、重新挂事件、重挂行号槽。
+        /// 只有在「句柄已经建不出来」这种异常状态下才会走到这里。
+        /// </summary>
+        private void RebuildEditor()
+        {
+            try
+            {
+                string text = editor.Text;
+                int sel = editor.SelectionStart;
+                int wrapLines = 0;
+                try { wrapLines = editor.GetLineFromCharIndex(editor.SelectionStart); } catch { }
+                bool wrap = miWrap.Checked;
+                Font f = editor.Font;
+                Color bg = editor.BackColor, fg = editor.ForeColor;
+
+                editorHost.Controls.Remove(editor);
+                try { editor.Dispose(); } catch { }
+
+                EditorBox ne = new EditorBox();
+                ne.Multiline = true;
+                ne.BorderStyle = BorderStyle.None;
+                ne.ScrollBars = wrap ? ScrollBars.Vertical : ScrollBars.Both;   // 只在建句柄前设一次
+                ne.WordWrap = wrap;
+                ne.AcceptsReturn = true;
+                ne.AcceptsTab = true;
+                ne.HideSelection = false;
+                ne.AllowDrop = true;
+                ne.Dock = DockStyle.Fill;
+                ne.Font = f;
+                ne.BackColor = bg;
+                ne.ForeColor = fg;
+                ne.TextChanged += OnEditorTextChanged;
+                ne.Scrolled += OnEditorScrolled;
+                ne.KeyDown += OnEditorKeyDown;
+                ne.Resize += delegate { UpdateEditorScrollbars(); };
+                ne.KeyUp += OnSelectionChangedLike;
+                ne.MouseUp += OnSelectionChangedLike;
+                ne.DragEnter += OnDragEnter;
+                ne.DragDrop += OnDragDrop;
+
+                editor = ne;
+                editorHost.Controls.Add(editor);
+                editor.BringToFront();
+                editor.Text = text;
+                try
+                {
+                    editor.SelectionStart = sel;
+                    int ci = editor.GetFirstCharIndexFromLine(wrapLines);
+                    if (ci >= 0) editor.SelectionStart = ci;
+                }
+                catch { }
+                if (gutter != null) gutter.SetSource(editor);
+                UpdateEditorScrollbars();
+                UpdateStatus();
+                LogSafe("[RebuildEditor] 完成，句柄=" + editor.IsHandleCreated);
+            }
+            catch (Exception ex) { LogSafe("[RebuildEditor] " + ex.ToString()); }
         }
 
         // ================================================================ 编辑区事件
@@ -1192,19 +1413,39 @@ namespace MdPad
         {
             try
             {
+                System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
                 byte[] bytes = File.ReadAllBytes(path);
+                currentBytes = bytes.Length;
                 bool bom;
                 Encoding enc = DetectEncoding(bytes, out bom);
                 int skip = bom ? enc.GetPreamble().Length : 0;
                 string raw = enc.GetString(bytes, skip, bytes.Length - skip);
                 newline = CountOccurrences(raw, "\r\n") >= CountOccurrences(raw, "\n") ? "\r\n" : "\n";
                 string text = raw.Replace("\r\n", "\n").Replace('\r', '\n');
+                long tRead = sw.ElapsedMilliseconds;
+
+                // 大文件：强制关掉自动换行 —— EDIT 控件对 MB 级文本做折行布局极慢，
+                // 打开和改字号都会卡（实测 2 MB 下差一个数量级）
+                largeDoc = text.Length > LargeDocChars;
+                largePreviewRequested = false;
+                largePlaceholderShown = false;
+                if (largeDoc)
+                {
+                    // 大文件强制关换行（同样走安全路径：WordWrap 会重建句柄）
+                    miWrap.Checked = false;
+                    SetEditorWrapSafe(false);
+                }
+                else
+                {
+                    SetEditorWrapSafe(miWrap.Checked);
+                }
 
                 loading = true;
                 editor.Text = text.Replace("\n", "\r\n");
                 editor.SelectionStart = 0;
                 editor.SelectionLength = 0;
                 loading = false;
+                long tText = sw.ElapsedMilliseconds;
 
                 currentPath = path;
                 fileEncoding = enc;
@@ -1213,8 +1454,11 @@ namespace MdPad
                 SetupWatcher(path);
                 UpdateEditorScrollbars();
                 RenderPreview(true);
+                long tPreview = sw.ElapsedMilliseconds;
                 UpdateStatus();
                 if (addRecent) AddRecent(path);
+                LogSafe(string.Format("OpenFile: {0} KB / 读 {1}ms / 设文本 {2}ms / 预览 {3}ms / 合计 {4}ms / 大文件={5}",
+                    bytes.Length / 1024, tRead, tText - tRead, tPreview - tText, sw.ElapsedMilliseconds, largeDoc));
             }
             catch (Exception ex)
             {
@@ -1394,7 +1638,8 @@ namespace MdPad
             int col = editor.SelectionStart - editor.GetFirstCharIndexFromLine(line - 1) + 1;
             stPos.Text = "行 " + line + "，列 " + col;
             stLen.Text = editor.TextLength + " 字符";
-            stMode.Text = viewMode == 0 ? "编辑+预览" : (viewMode == 1 ? "仅编辑" : "仅预览");
+            stMode.Text = (viewMode == 0 ? "编辑+预览" : (viewMode == 1 ? "仅编辑" : "仅预览"))
+                        + (largeDoc ? (largePreviewRequested ? " · 大文件(已截断渲染)" : " · 大文件模式") : "");
         }
 
         private void LoadConfig()
@@ -1503,26 +1748,27 @@ namespace MdPad
                 }
                 else editor.Focus();
 
-                // 本机实测：编辑框句柄走过「首次创建失败 → 稍后重试成功」这条路时，
-                // 左侧面板会停在未绘制状态（内部状态完全正常，就是屏幕上一片空白），
-                // 手动「折叠一次再展开」就恢复。这里自动做同样的动作，免得用户每次都要点一下。
+                // 句柄走过「首次创建失败 → 稍后重试成功」这条路时，左侧面板可能停在未绘制状态。
+                // 这里只做**安全的强制重绘**：不碰 SplitContainer 折叠（那会触发聚焦 → 句柄创建 → 失败弹框）。
                 if (editorHandleRetried)
                 {
-                    Safe("force-relayout", delegate
+                    Safe("force-repaint", delegate
                     {
-                        int d = split.SplitterDistance;
-                        split.Panel1Collapsed = true;
-                        split.Panel1Collapsed = false;
-                        try { if (d > 0 && d < split.Width - 120) split.SplitterDistance = d; }
-                        catch { }
                         editorHost.PerformLayout();
                         editor.Invalidate(); gutter.Invalidate(); editorHost.Invalidate(true);
-                        editor.Update(); gutter.Update(); editorHost.Update();
-                        // 折叠-展开强排会把左栏展开 —— 若用户 configured 的是「仅预览」(ViewMode=2)，
-                        // 上面的 OnShown ApplyViewMode 已收起左栏，这里必须按配置归位，
-                        // 否则「仅预览」状态被这次恢复动作悄悄破坏。
-                        ApplyViewMode();
-                        LogSafe("force-relayout: 已强制重排左侧面板");
+                        editor.Refresh(); gutter.Refresh();
+                        UpdateEditorScrollbars();
+                        LogSafe("force-repaint: 已强制重绘左侧面板");
+                    });
+                }
+
+                // 开发自测：MDPAD_SELFTEST=1 时连续放大字号，用于量「改字号」的真实耗时
+                if (Environment.GetEnvironmentVariable("MDPAD_SELFTEST") == "1")
+                {
+                    Safe("selftest", delegate
+                    {
+                        for (int i = 0; i < 3; i++) Zoom(1);
+                        LogSafe("selftest: 连续 3 次 Zoom 完成");
                     });
                 }
             });
