@@ -14,6 +14,7 @@ namespace MdPad
         private static void Main(string[] args)
         {
             logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "mdpad\\error.log");
+            PruneOldLogs();
             AppDomain.CurrentDomain.UnhandledException += OnUnhandled;
             Application.ThreadException += OnThreadException;
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -55,6 +56,45 @@ namespace MdPad
         private static void OnUnhandled(object sender, UnhandledExceptionEventArgs e)
         {
             Log("Unhandled: " + (e.ExceptionObject == null ? "(null)" : e.ExceptionObject.ToString()));
+        }
+
+        /// <summary>
+        /// 启动时清掉旧的诊断日志。mdpad-error-*.log 按 PID 命名、每次启动新开一个，
+        /// 而 exe 常驻在部署目录（往往是仓库根/便携目录），不清理就会无限攒下去。
+        /// 只删 7 天前的；本进程自己的文件（刚建）和太新的（可能是另一个还在跑的实例）不动。
+        /// </summary>
+        private static void PruneOldLogs()
+        {
+            try
+            {
+                string[] dirs = new string[]
+                {
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "mdpad")
+                };
+                int myPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                string mine = "mdpad-error-" + myPid + ".log";
+                DateTime cutoff = DateTime.Now.AddDays(-7);
+                for (int i = 0; i < dirs.Length; i++)
+                {
+                    try
+                    {
+                        if (string.IsNullOrEmpty(dirs[i]) || !Directory.Exists(dirs[i])) continue;
+                        foreach (string file in Directory.GetFiles(dirs[i], "mdpad-error-*.log"))
+                        {
+                            try
+                            {
+                                if (Path.GetFileName(file) == mine) continue;
+                                if (File.GetLastWriteTime(file) >= cutoff) continue;
+                                File.Delete(file);
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private static void Log(string text)
