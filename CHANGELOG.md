@@ -2,7 +2,7 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格。
 
-## [未发布]
+## [1.5.0] - 2026-10-08
 
 ### 新增（文件图标）
 - **`.md` 文件图标**：白页 + 折角 + 蓝色「M↓」（`tools\make-icon.ps1` 生成 `mdpad-file.ico`，16~256 共 7 档），
@@ -12,6 +12,8 @@
   （我们的命令是 `wscript.exe` → 显示成脚本宿主 / 空白页，这就是之前那个丑图标的原因）
 - 扩展名一层也补上经典回退关联（`HKCU\Software\Classes\.md\(默认)` = `MdPad.Document`）：
   `UserChoice` 的哈希一旦失效，系统会当成「完全没有关联」（空白页图标 + 类型名为空）
+- **README 重写版本段**：加版本要点表（1.2.1 → 1.5.0）、文件图标预览、大文件模式说明；
+  并**更正**了「uxtheme 未公开序号有害」的错误结论（真凶是 `WordWrap`/`ScrollBars` 重建句柄，见 1.4.0）
 
 ## [1.4.0] - 2026-10-07
 

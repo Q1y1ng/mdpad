@@ -2,7 +2,7 @@
   <img src="docs/icon.png" width="96" alt="mdpad">
   <h1>mdpad</h1>
   <p><b>记事本式的 Markdown 编辑器</b>：左边改，右边即时渲染。<br>
-  单个 exe（约 70 KB）、零依赖、不联网、不常驻。</p>
+  单个 exe（约 80 KB）、零依赖、不联网、不常驻。</p>
 </div>
 
 ![深色主题](docs/screenshots/dark.png)
@@ -48,6 +48,8 @@ mdpad.exe 笔记.md          # 直接打开
 装好后你会得到：开始菜单/桌面「mdpad」快捷方式、右键任意 `.md` 的「用 mdpad 编辑（Markdown）」、
 「打开方式」里的条目，以及 **`.md` 文件自己的图标**（白页 + 蓝色「M↓」）。
 **只动 HKCU 和用户目录，不需要管理员。**
+
+<p align="center"><img src="docs/icon-file.png" width="72" alt=".md 文件图标"></p>
 
 > ⚠️ **Win11 的旧式右键项在「显示更多选项」里**（`Shift+F10`），这是系统行为。
 
@@ -109,29 +111,49 @@ src\MarkdownRenderer.cs  自写 Markdown → HTML 渲染器（无第三方解析
 src\EditorBox.cs         带滚动通知的 TextBox + 行号槽控件
 src\Program.cs           入口、全局异常日志、IE11 渲染模式
 src\app.manifest         PerMonitorV2 DPI 感知
-tools\make-icon.ps1      生成多尺寸真彩 mdpad.ico（Fluent 风格，BMP 帧）
-tools\install-shell.ps1  安装快捷方式 / 右键菜单 / 图标
+tools\make-icon.ps1      生成应用图标 mdpad.ico + 文件图标 mdpad-file.ico（多尺寸真彩 BMP 帧）
+tools\install-shell.ps1  安装快捷方式 / 右键菜单 / 文件图标 / 默认应用登记
 ```
+
+## 版本
+
+| 版本 | 要点 |
+| --- | --- |
+| [1.5.0](https://github.com/Q1y1ng/mdpad/releases/tag/v1.5.0) | `.md` 文件图标（白页 + M↓）；修正 `DefaultIcon` 写法（此前资源管理器会回退到 `wscript` 的图标） |
+| [1.4.0](https://github.com/Q1y1ng/mdpad/releases/tag/v1.4.0) | 大文件模式（>300 KB）、句柄重建真根因、改字号/换主题走页内 CSS |
+| [1.3.0](https://github.com/Q1y1ng/mdpad/releases/tag/v1.3.0) | 左侧原始栏可折叠（`F9`）；修复悬停高亮变黄 |
+| [1.2.1](https://github.com/Q1y1ng/mdpad/releases/tag/v1.2.1) | Win11 原生质感（Mica / Fluent 图标 / 行号槽 / 暗色滚动条）；免签名启动链 |
+
+完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 已知边界
 
 - **预览用系统 WebBrowser（IE 内核）**：不支持 Mermaid、数学公式与复杂 CSS/ES6；换来的是零依赖、单文件、秒开
-- **超大文件**（> 10 MB）预览会变慢 → `Ctrl+2` 切到仅编辑
+- **大文件（> 300 KB）自动进「大文件模式」**：暂停自动预览 + 关闭自动换行，按 `Ctrl+R` 手动渲染前 200 KB。
+  实测 2 MB 文档打开约 100 ms、改字号每档 60~80 ms；IE 内核渲染 MB 级 HTML 是硬瓶颈，真要全文渲染请用别的工具
 - **不做多标签页、不做文件树** —— 保持「记事本」定位
-- 本项目开发机上出现过「创建窗口句柄时出错」的启动崩溃：该环境在窗体首次显示时的控件句柄创建会失败，
-  已在构造函数里用 `ForceHandles()` 提前建好整棵控件树的句柄绕过，并把所有外观类操作包了 try/catch
+- 开发机上出现过「创建窗口句柄时出错」：根因见下面第 1 条，已从根上修掉（运行期不再重建 EDIT 句柄）
 
 ## 开发中踩过的坑（值得一看）
 
-1. **不要用 uxtheme 的未公开序号**（`#135 SetPreferredAppMode` / `#133 AllowDarkModeForWindow`）：
-   序号随 Windows 版本漂移，实测在某 build 上调用后 **EDIT 控件再也建不出句柄**。滚动条暗色只用公开的
-   `SetWindowTheme(hwnd, "DarkMode_Explorer", null)`（IE 的滚动条是 MSHTML 的子窗口，需枚举 `ScrollBar` 类补刷）。
-2. **同一时刻重复设 `WebBrowser.DocumentText` 会让 IE 不触发 `DocumentCompleted`**（表现：预览窗空白）
-   → 导航加幂等守卫 + 兜底定时器。
-3. **`Control.CreateControl()` 对不可见子控件是跳过的** —— 窗体显示前想预建句柄必须直接访问 `.Handle`。
-4. **保存带 BOM 的文件要用 `GetPreamble()` 显式写入**，`Encoding.GetBytes` 不含前导码。
-5. **`TextBox` 没有 `SelectionChanged` / `Find`**（那是 RichTextBox 的），查找得用 `string.IndexOf`。
-6. 图标 **不要用 PNG 压缩帧**：资源管理器桌面快捷方式的图标提取路径不认，全部写成 BMP(DIB) 帧。
+1. **`TextBox.WordWrap` / `ScrollBars` 的 setter 会销毁并重建 EDIT 句柄** —— 这是本项目最大的坑：
+   句柄重建在某些机器上会失败，于是句柄丢失（控件属性全对但屏幕不画、聚焦与重绘全崩，
+   表现就是「首次打开左侧一片空白，折叠一次再展开才正常」）。
+   **运行期绝不要改这两个属性**；"内容不需要滚动时隐藏滚动条"改用一条**覆盖条**盖在滚动条位置上；
+   非改不可时走安全路径：改完检查 `IsHandleCreated`，丢了就 dispose 重建控件。
+2. **`DefaultIcon` 必须写成 `ProgID\DefaultIcon` 子键的 `(默认)` 值**，写成 ProgID 上的同名值时
+   Windows 找不到图标，会**退回用「命令里的 exe」的图标**（本项目的命令是 `wscript.exe`，于是 `.md`
+   显示成脚本宿主/空白页）。用 `AssocQueryString(ASSOCSTR_DEFAULTICON)` 可以当场判定 shell 认到了哪个图标。
+3. **预览改样式不要重载页面**：页面里拆出 `md-base` / `md-theme` 两块 CSS + 两个 JS
+   （`mdSetFontSize` / `mdSetTheme`），字号与主题改动只改 CSS；页内 `mdSetContent` 只换正文、**改不了 CSS**。
+4. **同一时刻重复设 `WebBrowser.DocumentText` 会让 IE 不触发 `DocumentCompleted`**（表现：预览窗空白）
+   → 导航加幂等守卫 + 兜底定时器；需要可靠写入时用 `Document.OpenNew(true)` + `Document.Write(html)` 同步写。
+5. **`Control.CreateControl()` 对不可见子控件是跳过的** —— 窗体显示前想预建句柄必须直接访问 `.Handle`。
+6. **保存带 BOM 的文件要用 `GetPreamble()` 显式写入**，`Encoding.GetBytes` 不含前导码；保存走**原子写入**（先写 `.tmp` 再替换）。
+7. **`TextBox` 没有 `SelectionChanged` / `Find`**（那是 RichTextBox 的），查找得用 `string.IndexOf`。
+8. 图标 **不要用 PNG 压缩帧**：资源管理器桌面快捷方式的图标提取路径不认，全部写成 BMP(DIB) 帧。
+9. uxtheme 的两个未公开序号（`#135 SetPreferredAppMode` / `#133 AllowDarkModeForWindow`）在本机 build 22631
+   **可以正常使用**（让 EDIT 自带的滚动条变暗必须靠它们）；当初怀疑它们导致建不出句柄是误判，真凶是第 1 条。
 
 ## 许可证
 
