@@ -1236,6 +1236,20 @@ namespace MdPad
             if (b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) { bom = true; return new UTF8Encoding(true); }
             if (b.Length >= 2 && b[0] == 0xFF && b[1] == 0xFE) { bom = true; return Encoding.Unicode; }
             if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xFF) { bom = true; return Encoding.BigEndianUnicode; }
+            // 无 BOM 的 UTF-16：NUL 字节是合法 UTF-8（U+0000），严格 UTF-8 解码不报错，
+            // 会一路掉进「按 UTF-8 读出 NUL 乱码」——用户随手一存就把原文件永久重写成错误编码。
+            // UTF-16 文本几乎每隔一个字节就是一个 0x00（ASCII 区），用偶/奇数位的 NUL 节奏识别。
+            if (b.Length >= 8)
+            {
+                bool evenNuls = true, oddNuls = true;
+                for (int i = 2; i < Math.Min(b.Length, 128); i += 2)
+                {
+                    if (b[i] != 0) evenNuls = false;
+                    if (b[i + 1] != 0) oddNuls = false;
+                }
+                if (evenNuls) return Encoding.BigEndianUnicode;   // 00 xx 00 xx …
+                if (oddNuls) return Encoding.Unicode;             // xx 00 xx 00 …
+            }
             try
             {
                 UTF8Encoding strict = new UTF8Encoding(false, true);
@@ -1274,7 +1288,12 @@ namespace MdPad
                 byte[] all = new byte[preamble.Length + body.Length];
                 Buffer.BlockCopy(preamble, 0, all, 0, preamble.Length);
                 Buffer.BlockCopy(body, 0, all, preamble.Length, body.Length);
-                File.WriteAllBytes(target, all);
+                // 原子保存：先写临时文件再替换。直接 WriteAllBytes(target) 的话，
+                // 中途崩溃/断电留下的就是半截文件 —— 对笔记编辑器是实打实的数据损失。
+                string tmp = target + ".tmp";
+                File.WriteAllBytes(tmp, all);
+                if (File.Exists(target)) File.Replace(tmp, target, null);
+                else File.Move(tmp, target);
                 currentPath = target;
                 SetDirty(false);
                 UpdateTitle();
@@ -1499,6 +1518,10 @@ namespace MdPad
                         editorHost.PerformLayout();
                         editor.Invalidate(); gutter.Invalidate(); editorHost.Invalidate(true);
                         editor.Update(); gutter.Update(); editorHost.Update();
+                        // 折叠-展开强排会把左栏展开 —— 若用户 configured 的是「仅预览」(ViewMode=2)，
+                        // 上面的 OnShown ApplyViewMode 已收起左栏，这里必须按配置归位，
+                        // 否则「仅预览」状态被这次恢复动作悄悄破坏。
+                        ApplyViewMode();
                         LogSafe("force-relayout: 已强制重排左侧面板");
                     });
                 }
