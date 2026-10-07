@@ -151,5 +151,107 @@ $g2.Dispose()
 $big.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png)
 $big.Dispose()
 
+# ---------------------------------------------------------------- 文件类型图标（.md 在资源管理器里显示的那个）
+# 形状：白页 + 右上角折角 + 蓝色「M↓」记号（与应用图标同一套视觉）
+function Draw-MdPadFileIcon([System.Drawing.Graphics]$g, [int]$size) {
+  $s = $size / 256.0
+  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+  $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+
+  # 页面（右上角切一刀做折角）
+  $left = [single](48 * $s); $top = [single](22 * $s)
+  $right = [single](208 * $s); $bottom = [single](234 * $s)
+  $fold = [single](46 * $s)
+  $r = [single](14 * $s)
+  $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $path.AddArc($left, $top, $r * 2, $r * 2, 180, 90)
+  $path.AddLine(($right - $fold), $top, $right, ($top + $fold))
+  $path.AddLine($right, ($top + $fold), $right, ($bottom - $r))
+  $path.AddArc(($right - $r * 2), ($bottom - $r * 2), $r * 2, $r * 2, 0, 90)
+  $path.AddArc($left, ($bottom - $r * 2), $r * 2, $r * 2, 90, 90)
+  $path.CloseFigure()
+  $pageBrush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+    (New-Object System.Drawing.RectangleF($left, $top, ($right - $left), ($bottom - $top))),
+    [System.Drawing.Color]::White, [System.Drawing.Color]::FromArgb(255, 232, 240, 250), [single]90)
+  $g.FillPath($pageBrush, $path)
+  $pageBrush.Dispose()
+  $penBorder = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 176, 190, 206), [single](4 * $s))
+  $g.DrawPath($penBorder, $path)
+  $penBorder.Dispose()
+  # 折角
+  $foldPath = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $foldPath.AddPolygon([System.Drawing.PointF[]]@(
+    (New-Object System.Drawing.PointF(($right - $fold), $top)),
+    (New-Object System.Drawing.PointF(($right - $fold), ($top + $fold))),
+    (New-Object System.Drawing.PointF($right, ($top + $fold)))
+  ))
+  $fb = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 206, 219, 232))
+  $g.FillPath($fb, $foldPath)
+  $fb.Dispose(); $foldPath.Dispose()
+
+  # 「M↓」记号（应用图标同款蓝）
+  $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 12, 92, 184), [single](22 * $s))
+  $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+  $g.DrawLines($pen, [System.Drawing.PointF[]]@(
+    (New-Object System.Drawing.PointF((78 * $s), (196 * $s))),
+    (New-Object System.Drawing.PointF((78 * $s), (108 * $s))),
+    (New-Object System.Drawing.PointF((120 * $s), (152 * $s))),
+    (New-Object System.Drawing.PointF((162 * $s), (108 * $s))),
+    (New-Object System.Drawing.PointF((162 * $s), (196 * $s)))
+  ))
+  $g.DrawLine($pen, [single](200 * $s), [single](110 * $s), [single](200 * $s), [single](168 * $s))
+  $g.DrawLines($pen, [System.Drawing.PointF[]]@(
+    (New-Object System.Drawing.PointF((178 * $s), (148 * $s))),
+    (New-Object System.Drawing.PointF((200 * $s), (176 * $s))),
+    (New-Object System.Drawing.PointF((222 * $s), (148 * $s)))
+  ))
+  $pen.Dispose()
+  $path.Dispose()
+}
+
+$fileIcoPath = Join-Path $root 'mdpad-file.ico'
+$filePngPath = Join-Path $root 'docs\icon-file.png'
+$fileSizes = @(16, 24, 32, 48, 64, 128, 256)
+$fileFrames = @()
+foreach ($sz in $fileSizes) {
+  $bmp = New-Object System.Drawing.Bitmap $sz, $sz, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.Clear([System.Drawing.Color]::Transparent)
+  Draw-MdPadFileIcon $g $sz
+  $g.Dispose()
+  $fileFrames += , (New-IconFrame $bmp)
+  $bmp.Dispose()
+}
+$fms = New-Object System.IO.MemoryStream
+$fw = New-Object System.IO.BinaryWriter($fms)
+$fw.Write([int16]0); $fw.Write([int16]1); $fw.Write([int16]$fileSizes.Count)
+$foff = 6 + 16 * $fileSizes.Count
+for ($i = 0; $i -lt $fileSizes.Count; $i++) {
+  $sz = $fileSizes[$i]
+  $fw.Write([byte]($(if ($sz -ge 256) { 0 } else { $sz })))
+  $fw.Write([byte]($(if ($sz -ge 256) { 0 } else { $sz })))
+  $fw.Write([byte]0); $fw.Write([byte]0)
+  $fw.Write([int16]1); $fw.Write([int16]32)
+  $fw.Write([int]$fileFrames[$i].Length)
+  $fw.Write([int]$foff)
+  $foff += $fileFrames[$i].Length
+}
+foreach ($f in $fileFrames) { $fw.Write([byte[]]$f) }
+$fw.Flush()
+[System.IO.File]::WriteAllBytes($fileIcoPath, $fms.ToArray())
+$fw.Dispose(); $fms.Dispose()
+$fbig = New-Object System.Drawing.Bitmap 256, 256, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$g3 = [System.Drawing.Graphics]::FromImage($fbig)
+$g3.Clear([System.Drawing.Color]::Transparent)
+Draw-MdPadFileIcon $g3 256
+$g3.Dispose()
+$fbig.Save($filePngPath, [System.Drawing.Imaging.ImageFormat]::Png)
+$fbig.Dispose()
+"FILE: $fileIcoPath ($((Get-Item $fileIcoPath).Length) 字节, $($fileSizes.Count) 个尺寸)"
+"FILE PNG: $filePngPath"
+
 "ICO : $icoPath ($((Get-Item $icoPath).Length) 字节, $($sizes.Count) 个尺寸)"
 "PNG : $pngPath ($((Get-Item $pngPath).Length) 字节)"

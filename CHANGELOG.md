@@ -2,6 +2,17 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格。
 
+## [未发布]
+
+### 新增（文件图标）
+- **`.md` 文件图标**：白页 + 折角 + 蓝色「M↓」（`tools\make-icon.ps1` 生成 `mdpad-file.ico`，16~256 共 7 档），
+  注册到 `MdPad.Document\DefaultIcon` 子键 + `.md/.markdown/.mdx\DefaultIcon`，`install-shell.ps1` 末尾补 `SHChangeNotify`
+- ⚠️ **修正 `DefaultIcon` 的写法**：必须写成 `ProgID\DefaultIcon` **子键的 `(默认)` 值**；
+  写成 ProgID 上的同名值时 Windows 找不到图标，会退回用「命令里的 exe」的图标
+  （我们的命令是 `wscript.exe` → 显示成脚本宿主 / 空白页，这就是之前那个丑图标的原因）
+- 扩展名一层也补上经典回退关联（`HKCU\Software\Classes\.md\(默认)` = `MdPad.Document`）：
+  `UserChoice` 的哈希一旦失效，系统会当成「完全没有关联」（空白页图标 + 类型名为空）
+
 ## [1.4.0] - 2026-10-07
 
 ### 新增（大文件性能）

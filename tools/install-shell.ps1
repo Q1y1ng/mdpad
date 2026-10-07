@@ -79,9 +79,8 @@ Write-Host '  Applications\mdpad.exe 已登记'
 # 并加进 .md/.markdown/.mdx 的 OpenWithProgids（右键「打开方式」子菜单可见）
 $prog = 'HKCU:\Software\Classes\MdPad.Document'
 New-Item -Path "$prog\shell\open\command" -Force | Out-Null
-Set-ItemProperty -Path $prog -Name '(Default)' -Value 'Markdown 文档 (mdpad)'
+Set-ItemProperty -Path $prog -Name '(Default)' -Value 'Markdown 文档'
 Set-ItemProperty -Path $prog -Name 'FriendlyTypeName' -Value 'Markdown 文档 (mdpad)'
-Set-ItemProperty -Path $prog -Name 'DefaultIcon' -Value "$ico,0"
 Set-ItemProperty -Path "$prog\shell\open\command" -Name '(Default)' -Value $cmd
 foreach ($ext in @('.md', '.markdown', '.mdx')) {
   $k = "HKCU:\Software\Classes\$ext\OpenWithProgids"
@@ -89,6 +88,41 @@ foreach ($ext in @('.md', '.markdown', '.mdx')) {
   New-ItemProperty -Path $k -Name 'MdPad.Document' -PropertyType String -Value '' -Force | Out-Null
 }
 Write-Host '  MdPad.Document 已登记并加入 OpenWithProgids'
+
+# ---- 文件图标（资源管理器里 .md 显示的那个）
+# ⚠️ DefaultIcon 必须写成 **子键的 (默认) 值**：
+#      正确  HKCR\MdPad.Document\DefaultIcon   (默认) = "xxx.ico,0"
+#      错误  HKCR\MdPad.Document 上名为 DefaultIcon 的值（我一开始就是这么写的）
+#    Windows 会找不到图标 → 退回去用「命令里的 exe」的图标（我们命令是 wscript.exe，
+#    于是显示成脚本宿主；如果 UserChoice 又在，图标还会跟着命令的 exe 走）。
+$fileIco = Join-Path $iconDir 'mdpad-file.ico'
+Copy-Item -LiteralPath (Join-Path $root 'mdpad-file.ico') -Destination $fileIco -Force
+$spec = "$fileIco,0"
+Remove-ItemProperty -Path $prog -Name 'DefaultIcon' -ErrorAction SilentlyContinue
+New-Item -Path "$prog\DefaultIcon" -Force | Out-Null
+Set-ItemProperty -Path "$prog\DefaultIcon" -Name '(Default)' -Value $spec
+# 经典回退关联：UserChoice 一旦哈希失效，系统会当成「完全没有关联」→ 空白页图标 + 类型名为空，
+# 所以扩展名那一层也写上，双保险
+foreach ($ext in @('.md', '.markdown', '.mdx')) {
+  $k = "HKCU:\Software\Classes\$ext"
+  New-Item -Path $k -Force | Out-Null
+  Set-ItemProperty -Path $k -Name '(Default)' -Value 'MdPad.Document'
+  Remove-ItemProperty -Path $k -Name 'DefaultIcon' -ErrorAction SilentlyContinue
+  New-Item -Path "$k\DefaultIcon" -Force | Out-Null
+  Set-ItemProperty -Path "$k\DefaultIcon" -Name '(Default)' -Value $spec
+}
+Write-Host "  文件图标已注册: $spec"
+# 通知 shell「关联变了」，否则要等它自己慢慢刷新（或重启 explorer）
+try {
+  Add-Type @"
+using System;using System.Runtime.InteropServices;
+public class MdPadShellNotify {
+  [DllImport("shell32.dll")] public static extern void SHChangeNotify(int e, uint f, IntPtr a, IntPtr b);
+  public static void Go() { SHChangeNotify(0x08000000, 0x1000, IntPtr.Zero, IntPtr.Zero); }
+}
+"@ -ErrorAction SilentlyContinue
+  [MdPadShellNotify]::Go()
+} catch { }
 
 # 注册为「已注册应用」：这样「设置 → 应用 → 默认应用」里会以 **mdpad** 的名字出现，
 # 并提供一个「设置默认值」按钮，一次点完（Windows 自己写 UserChoice，不需要碰哈希）
