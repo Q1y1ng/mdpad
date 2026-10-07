@@ -101,6 +101,7 @@
 - **启动即崩「创建窗口句柄时出错」**（本机 build 22631 实测，100% 复现）：句柄会在窗体首次显示时的 `WM_SHOWWINDOW → CreateControl` 递归里创建，而那一步创建 EDIT 控件会失败，且 `OnLoad` 都来不及跑
   → 构造函数末尾 `ForceHandles()` 递归强制建句柄（注意 `Control.CreateControl()` 对**不可见**子控件是跳过的，必须直接访问 `Handle`）；所有外观类操作（`ScrollBars` 重建句柄、uxtheme 主题、预览初始化、OnShown 全体）一律包 try/catch，失败只记日志、不弹崩溃框
 - **不要用 uxtheme 的未公开序号**（`#135 SetPreferredAppMode` / `#133 AllowDarkModeForWindow`）：序号随 Windows 版本漂移，本机调用后 EDIT 控件再也建不出句柄。滚动条暗色只用公开 API `SetWindowTheme(hwnd, "DarkMode_Explorer", null)`（IE 的滚动条是 MSHTML 的子窗口，需枚举 `ScrollBar` 类补刷）
+  > ⚠️ **本条结论已于 1.5.0 更正**：真凶是 `WordWrap`/`ScrollBars` 的 setter 重建 EDIT 句柄（见 [1.4.0] 与 [1.5.0]），这两个序号在本机 build 22631 实际**可用**（EDIT 自带滚动条要变暗必须靠它们）。
 - 日志改为按进程号分文件、同时写 exe 同目录（崩溃实例的模态框会锁住日志文件；沙箱下 `%APPDATA%` 也可能写不进）
 - 空文档时禁用态滚动条仍是白色 → 不需要滚动时干脆不显示滚动条（`EditorNeedsScrollbar()`）
 
